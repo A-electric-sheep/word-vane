@@ -1,0 +1,23 @@
+# Python 缓存
+__pycache__/
+*.pyc
+*.pyo
+
+# 输出目录与测试产物（不提交真实转换结果）
+*_md/
+images/
+out/
+tags
+example_*.md
+
+# 测试/内部文档（防止误传敏感原文档）
+*.docx
+*.doc
+*.png
+*.pdf
+
+# 临时与系统文件
+*.tmp
+*.log
+.DS_Store
+Thumbs.db
