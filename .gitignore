@@ -3,6 +3,16 @@ __pycache__/
 *.pyc
 *.pyo
 
+# 打包与构建产物
+build/
+dist/
+*.egg-info/
+.eggs/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
 # 输出目录与测试产物（不提交真实转换结果）
 *_md/
 images/

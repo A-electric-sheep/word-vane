@@ -17,7 +17,7 @@ import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from verify_consistency import word_parse, md_parse, norm  # noqa: E402
+from verify_consistency import md_parse, word_parse  # noqa: E402
 
 
 def md_structure(md_path):

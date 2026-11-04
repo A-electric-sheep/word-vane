@@ -1,55 +1,80 @@
 # word2md — Word 转 Markdown 工具包
 
-将 Word 文档（`.docx`）转换为结构保真的 Markdown，并校验转换结果的完整性。
-
-经 70 份真实技术文档全量验证：表格 100% 逐格一致、公式 100% 对齐、图片零缺失、段落一致率 99.998%。
+为**样式重度的技术文档**做的 Word→Markdown 转换器：合并单元格忠实还原、转换后强制校验、
+只依赖两个 Python 包（不装 Pandoc、不下模型、不联网）。
 
 **版本**：1.0.0
 
----
+## 为什么不用通用转换器
 
-## 一、安装
+GFM 管道表语法上没有 `colspan`/`rowspan`。因此"docx → GFM"路线的工具遇到合并单元格，
+只能重复值、留空或丢表——三种做法都让读者无法判断原表有几处合并。
 
-需要 Python 3.9 及以上。
+本工具对含合并的表输出 HTML `<table>`，保留原生 `colspan`/`rowspan`：
+
+| 工具 | 合并属性保留 | 输出形态 |
+|---|---|---|
+| **word2md** | **4/4 横向、3/3 纵向** | HTML `<table>` + colspan/rowspan |
+| anydoc（实测对照） | 0/4、0/3 | GFM 管道表，合并语义不可恢复 |
+
+复现：`python bench/merged_cells_bench.py --with-anydoc`（详见 [bench/README.md](bench/README.md)）
+
+## 安装
 
 ```bash
-pip install -r requirements.txt
+pip install word2md
 ```
 
-只需两个依赖：`python-docx`（解析 .docx）、`Pillow`（图片光栅化）。不依赖 Office 或 LibreOffice，无需联网。
+需要 Python 3.9 及以上。仅两个依赖：`python-docx`（解析 .docx）、`Pillow`（图片光栅化）。
+不依赖 Office / LibreOffice，无需联网，可离线部署。
 
----
+从源码安装（开发用）：
 
-## 二、最短路径：三步跑通
+```bash
+git clone https://github.com/A-electric-sheep/word-vane.git
+cd word-vane
+pip install -e ".[dev]"
+```
 
-以下命令在**本文件所在目录**执行。
+## 最短路径：两步跑通
 
 ```bash
 # 1. 转换
-python word2md.py 你的文档.docx -o 输出目录
+word2md 你的文档.docx -o 输出目录
 
-# 2. 校验（强烈建议，确认无内容丢失）
-python verify_consistency.py 你的文档.docx 输出目录/你的文档.md
-
-# 3. 查看结果
-# 输出：输出目录/你的文档.md  +  输出目录/images/*.png
+# 2. 校验（强烈建议，确认无内容丢失；不一致时退出码为 1）
+word2md-verify 你的文档.docx 输出目录/你的文档.md
 ```
+
+输出：`输出目录/你的文档.md` + `输出目录/images/*.png`
+
+命令行工具一览（`pip install` 后即可用）：
+
+| 命令 | 作用 |
+|---|---|
+| `word2md` | 转换单个文档 |
+| `word2md-verify` | 内容级一致性校验（退出码可用于 CI 门禁） |
+| `word2md-batch` | 批量转换整个目录 |
+| `word2md-batch-verify` | 批量校验 |
+| `word2md-probe` | AI 可读性诊断（0–100 分 + 缺陷清单） |
+
+也可直接运行脚本，无需安装：`python word2md.py 你的文档.docx -o 输出目录`
 
 校验输出最末行的 `【总判定】 通过 ✓` 即表示内容完整。
 
 ---
 
-## 三、四个脚本的分工
+## 各脚本分工
 
-| 场景 | 脚本 | 用法 |
-|---|---|---|
-| 转单个文档 | `word2md.py` | `python word2md.py 输入.docx -o 输出目录` |
-| 校验单个文档 | `verify_consistency.py` | `python verify_consistency.py 输入.docx 输出.md` |
-| 转整个目录 | `batch_convert.py` | `python batch_convert.py 文档根目录 --out 输出根目录` |
-| 批量校验 | `batch_verify.py` | `python batch_verify.py 文档根目录 --converted 输出根目录` |
+| 场景 | 模块 | 命令行 | 脚本直调 |
+|---|---|---|---|
+| 转单个文档 | `word2md.py` | `word2md 输入.docx -o 输出目录` | `python word2md.py ...` |
+| 校验单个文档 | `verify_consistency.py` | `word2md-verify 输入.docx 输出.md` | `python verify_consistency.py ...` |
+| 转整个目录 | `batch_convert.py` | `word2md-batch 文档根目录 --out 输出根目录` | 同左 |
+| 批量校验 | `batch_verify.py` | `word2md-batch-verify 文档根目录 --converted 输出根目录` | 同左 |
+| AI 可读性诊断 | `review_probe.py` | `word2md-probe 输入.docx 输出.md` | 同左 |
 
 `math_latex.py` 是 `word2md.py` 的依赖（公式转 LaTeX），不需单独调用。
-`review_probe.py` 是进阶诊断工具，用于分析 Markdown 的 AI 可读性（见第七节）。
 
 ### 批量处理示例
 
@@ -66,7 +91,7 @@ python batch_verify.py ./文档库 --converted ./转换结果 --workers 4
 
 ---
 
-## 四、转换器参数
+## 转换器参数
 
 ```
 python word2md.py 输入.docx [-o 输出目录] [--no-images] [--no-code-heuristics]
@@ -88,7 +113,7 @@ python word2md.py 输入.docx [-o 输出目录] [--no-images] [--no-code-heurist
 
 ---
 
-## 五、支持的文档元素
+## 支持的文档元素
 
 | 元素 | 处理方式 |
 |---|---|
@@ -105,7 +130,7 @@ python word2md.py 输入.docx [-o 输出目录] [--no-images] [--no-code-heurist
 
 ---
 
-## 六、适用范围与已知限制
+## 适用范围与已知限制
 
 **适合**：报告、技术规格书、手册、方案、论文等「文字 + 表格 + 图片」为主的 `.docx`；中英文混排；含合并单元格、嵌套表、数学公式的专业文档。
 
@@ -130,7 +155,7 @@ python word2md.py 输入.docx [-o 输出目录] [--no-images] [--no-code-heurist
 
 ---
 
-## 七、校验与诊断
+## 校验与诊断
 
 ### 一致性校验（verify_consistency.py）
 
@@ -142,19 +167,26 @@ python word2md.py 输入.docx [-o 输出目录] [--no-images] [--no-code-heurist
 
 若为 `False`，`paragraphs.differences` 与 `tables.diff_indices` 会给出具体差异位置。
 
+`word2md-verify` 的退出码为 `0`（全部通过）或 `1`（存在差异），可直接作为 CI 门禁：
+
+```bash
+word2md doc.docx -o out/
+word2md-verify doc.docx out/doc.md || exit 1
+```
+
 ### AI 可读性诊断（review_probe.py）
 
 分析生成的 Markdown 是否适合交给 AI 阅读，输出结构指标、缺陷清单与 0-100 评分：
 
 ```bash
-python review_probe.py 输入.docx 输出.md --sample 8
+word2md-probe 输入.docx 输出.md --sample 8
 ```
 
 检查项：标题层级是否可导航、表格列数是否一致、图片引用是否存在、公式是否闭合、有无残留占位符、目录锚点是否有效。
 
 ---
 
-## 八、库调用
+## 库调用
 
 ```python
 import sys
@@ -174,7 +206,7 @@ print(report['pass'])
 
 ---
 
-## 九、文件清单
+## 文件清单
 
 | 文件 | 职责 | 必需 |
 |---|---|---|
@@ -185,12 +217,30 @@ print(report['pass'])
 | `batch_verify.py` | 批量校验驱动 | 批量时 |
 | `review_probe.py` | AI 可读性诊断 | 可选 |
 | `tools/convert_emf.ps1` | EMF/WMF 高分光栅化脚本（Windows PowerShell，可选） | 可选 |
-| `requirements.txt` | 依赖清单 | 是 |
+| `pyproject.toml` | 打包与工具链配置（ruff / pytest） | 是 |
+| `requirements.txt` | 依赖清单（等价于 pyproject 的 dependencies） | 可选 |
 | `REVIEW_SPEC.md` | 复核规程（供 AI 子代理遵循） | 可选 |
+| `tests/` | pytest 测试（夹具运行时生成，仓库不含 .docx） | 开发 |
+| `bench/` | 合并单元格保真度基准（可复现对照） | 可选 |
 
 ---
 
-## 十、常见问题
+## 开发
+
+```bash
+pip install -e ".[dev]"
+
+pytest              # 24 项测试
+ruff check .        # 风格检查
+python bench/merged_cells_bench.py    # 合并单元格基准
+```
+
+CI（GitHub Actions）在 Ubuntu 与 Windows 上跑 Python 3.9 / 3.11 / 3.13 三档，
+并验证 wheel 构建与安装后 CLI 可用。
+
+---
+
+## 常见问题
 
 **Q：转换后标题全部丢失？**
 文档没用标准 Heading 样式。检查 Word 里标题用的样式名，然后用 `heading_styles={'你的样式名': 1}` 传入映射。

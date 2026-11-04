@@ -1,0 +1,93 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "word2md"
+dynamic = ["version"]
+description = "Word(.docx) 转 Markdown 转换器：合并单元格忠实还原，转换后强制一致性校验，仅依赖 python-docx 与 Pillow"
+readme = "README.md"
+requires-python = ">=3.9"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "A-electric-sheep" }]
+keywords = [
+    "docx",
+    "word",
+    "markdown",
+    "converter",
+    "omml",
+    "latex",
+    "merged-cells",
+    "consistency-verification",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: End Users/Desktop",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Documentation",
+    "Topic :: Text Processing :: Markup :: Markdown",
+    "Topic :: Utilities",
+]
+dependencies = [
+    "python-docx>=1.1.0",
+    "Pillow>=9.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "ruff>=0.5",
+    "build>=1.0",
+]
+
+[project.scripts]
+word2md = "word2md:main"
+word2md-verify = "verify_consistency:main"
+word2md-batch = "batch_convert:main"
+word2md-batch-verify = "batch_verify:main"
+word2md-probe = "review_probe:main"
+
+[project.urls]
+Homepage = "https://github.com/A-electric-sheep/word-vane"
+Repository = "https://github.com/A-electric-sheep/word-vane"
+Issues = "https://github.com/A-electric-sheep/word-vane/issues"
+
+[tool.setuptools]
+# 扁平布局：6 个模块平铺在仓库根目录，按模块名安装
+py-modules = [
+    "word2md",
+    "math_latex",
+    "verify_consistency",
+    "batch_convert",
+    "batch_verify",
+    "review_probe",
+]
+
+[tool.setuptools.dynamic]
+version = { attr = "word2md.__version__" }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# 显式把 tests/ 加入导入路径，避免依赖 pytest 的隐式 rootdir 插入行为
+pythonpath = ["tests", "."]
+addopts = "-ra"
+filterwarnings = ["error::DeprecationWarning:word2md"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+ignore = [
+    "E501",  # 行宽由 line-length 约束，长注释/中文说明不强制换行
+    "E402",  # 保持"脚本可直接运行"：sys.path.insert 后紧跟同目录模块导入
+]

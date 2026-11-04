@@ -30,7 +30,6 @@ import os
 import re
 import sys
 import zipfile
-from pathlib import Path
 
 # 版本号: 分发后用于区分行为差异, 修改转换逻辑时请同步递增
 __version__ = '1.0.0'
@@ -66,7 +65,11 @@ DEFAULT_HEADING_STYLES = {'Title': 1, 'Heading 1': 1, 'Heading 2': 2, 'Heading 3
                           # [DESENSITIZED] 同系列技术参考手册一级章节标题样式(实测: 简介/文档约定/资源框图等 32 处)
                           'SOC1': 1, 'SOC2': 1}
 DEFAULT_TOC_STYLES = {'toc 1': 1, 'toc 2': 2, 'toc 3': 3, 'toc 4': 4, 'toc 5': 1, 'TOC1': 1,
-                      'TOC2': 2, 'TOC3': 3, 'TOC4': 4}
+                      'TOC2': 2, 'TOC3': 3, 'TOC4': 4,
+                      # Word 内置目录样式的标准写法是「TOC 1」~「TOC 9」(带空格、
+                      # 大写); 仅收录全小写/无空格形态会漏判, 致整块目录退化为正文
+                      'TOC 1': 1, 'TOC 2': 2, 'TOC 3': 3, 'TOC 4': 4, 'TOC 5': 5,
+                      'TOC 6': 6, 'TOC 7': 7, 'TOC 8': 8, 'TOC 9': 9}
 
 CODE_PREFIXES = ('#include', '#define', 'unsigned', 'void ', 'static', 'typedef',
                  'int ', 'char ', 'long ', 'short ', 'float ', '/*', '//')
@@ -77,14 +80,28 @@ RE_CODE_ASSIGN = re.compile(
     r"(?:\s*;\s*(?://.*)?)?$"
 )
 RE_CODE_CTRL = re.compile(r'^(?:\b(?:for|if|while|switch)\s*\(.*|\breturn\b.*|[\{\}])$')
+# 函数调用语句: 纯 ASCII 标识符 + 括号参数 + 分号收尾, 如 ``printf("%d", n);``
+# 限定"纯 ASCII 且无中文"是为了不误伤正文里的「详见附录A(第5页);」这类句子。
+RE_CODE_CALL = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*\s*\([^;]*\)\s*;$')
+# 中日韩统一表意文字：用于把"含中文的行"排除出代码判定
+_RE_CJK = re.compile(r'[\u4e00-\u9fff\u3400-\u4dbf]')
 
 
 def _looks_like_code(t: str) -> bool:
     if not t:
         return False
+    # 先剥离前导空白再判定。C 代码在 Word 里常以缩进形式出现
+    # (``    int n = 0;``), 若拿原串做 startswith / 正则 ^ 锚点,
+    # 缩进行会全部漏判, 导致单个代码块被切成多段甚至整段不被识别。
+    t = t.lstrip()
+    if not t:
+        return False
     for p in CODE_PREFIXES:
         if t.startswith(p):
             return True
+    # 函数调用语句(纯 ASCII): 见 RE_CODE_CALL 注释
+    if _RE_CJK.search(t) is None and RE_CODE_CALL.match(t):
+        return True
     if not (RE_CODE_ASSIGN.match(t) or RE_CODE_CTRL.match(t)):
         return False
     # 排除"数学关系式"被误判为 C 赋值语句: 形如
@@ -136,6 +153,9 @@ class Converter:
         self.toc_level = dict(DEFAULT_TOC_STYLES)
         if toc_styles:
             self.toc_level.update(toc_styles)
+        # 与标题映射保持一致: 样式名大小写不敏感查找。
+        # Word 中「TOC 1」/「toc 1」/「TOC1」三种写法并存, 精确匹配会漏判。
+        self._toc_ci = {k.strip().lower(): v for k, v in self.toc_level.items()}
 
         self.warnings: list[str] = []
         self.doc = docx.Document(self.src)
@@ -1182,7 +1202,8 @@ class Converter:
                     lines.append('')
                     continue
 
-                if style in self.toc_level and self.include_toc:
+                _toc_lv = self._toc_ci.get(style.strip().lower())
+                if _toc_lv and self.include_toc:
                     entry = self._parse_toc_entry(p_el)
                     if entry:
                         label, anchor = entry
@@ -1193,7 +1214,7 @@ class Converter:
                             target = self.anchor2slug.get('TEXT:' + label, '')
                         if target == '#':
                             target = ''
-                        toc_entries.append((self.toc_level[style], label, target))
+                        toc_entries.append((_toc_lv, label, target))
                     continue
 
                 hlv = self._heading_level_of(blk)
@@ -1260,7 +1281,10 @@ class Converter:
                     if pending_blank:
                         code_buf.append('')
                         pending_blank = False
-                    code_buf.append(txt)
+                    # 代码块保留行首缩进: txt 已被 strip(), 直接用会把
+                    # ``    int n = 0;`` 压成 ``int n = 0;``, 丢失代码层级。
+                    # 取 rich_runs 原始输出并仅去掉行尾空白。
+                    code_buf.append(self.rich_runs(p_el).rstrip())
                     continue
                 else:
                     pending_blank = False
@@ -1351,12 +1375,14 @@ def convert_word_to_markdown(src_path, out_dir=None, **kwargs) -> dict:
         raise FileNotFoundError(
             f'找不到文件: {src_path}\n'
             f'请检查路径是否正确(当前目录: {os.getcwd()})')
-    if not src_path.lower().endswith(('.docx', '.doc')):
-        # .doc 需先转 docx, 给出明确提示
-        if src_path.lower().endswith('.doc'):
-            raise ValueError(
-                '旧版 .doc 二进制格式不被本工具直接支持。请先用 Word/WPS 另存为 .docx, '
-                '或使用 LibreOffice: soffice --headless --convert-to docx 输入.doc')
+    # 旧版 .doc 是 OLE 二进制, python-docx 无法读取。必须在这里拦下并给出
+    # 可操作指引; 否则会直接抛底层 PackageNotFoundError, 用户无从判断原因。
+    # 注意: 早期版本把 '.doc' 一并写进了"允许"元组, 导致本分支永不可达。
+    if src_path.lower().endswith('.doc'):
+        raise ValueError(
+            '旧版 .doc 二进制格式不被本工具直接支持。请先用 Word/WPS 另存为 .docx, '
+            '或使用 LibreOffice: soffice --headless --convert-to docx 输入.doc')
+    if not src_path.lower().endswith('.docx'):
         raise ValueError(f'不支持的输入格式: {src_path}, 仅支持 .docx')
 
     conv = Converter(src_path,

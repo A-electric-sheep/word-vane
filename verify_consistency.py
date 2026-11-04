@@ -10,7 +10,6 @@
   - MD 侧剥离: 标题#、列表前缀(-/1./a./缩进)、强调(*single*/**double**)、HTML标签、$公式$、GFM管道
 """
 import re
-import sys
 import zipfile
 from difflib import SequenceMatcher
 from xml.etree import ElementTree as ET
@@ -18,7 +17,9 @@ from xml.etree import ElementTree as ET
 W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
 M = 'http://schemas.openxmlformats.org/officeDocument/2006/math'
 NS = {'w': W}
-TOC_STYLES = {'TOC1', 'TOC2', 'TOC3', 'TOC4', 'TOC5', 'toc1', 'toc2', 'toc3'}
+# 目录条目样式: 统一小写比对, 覆盖 'TOC 1' / 'toc 1' / 'TOC1' 三种 Word 写法
+TOC_STYLES = {'toc 1', 'toc 2', 'toc 3', 'toc 4', 'toc 5',
+              'toc1', 'toc2', 'toc3', 'toc4', 'toc5'}
 
 
 def _is_toc_style_name(name):
@@ -45,9 +46,7 @@ def word_w_text(ch):
     """提取 w:t 文本, 跳过 ruby 注音 rt 与隐藏 run(webHidden) 的文本——与转换器口径一致"""
     parts = []
     for t in ch.iter('{%s}t' % W):
-        # 跳过 ruby rt 内的 t
-        parent = None
-        # ElementTree 无 getparent, 判祖先: 简化为收集时排除 rt 路径
+        # 注: ElementTree 无 getparent, 祖先过滤统一在下方 walk() 中完成
         parts.append(('t', t))
     # 重建: 按结构过滤
     out = []
@@ -464,6 +463,14 @@ def md_parse(md_path, return_alt=False):
     return paras, tables
 
 
+def _is_same(x, y, j, alt_b):
+    """b 侧等价候选判定: 完全相等, 或该位置存在与 a 相等的等价文本。
+
+    原为内联 lambda, 改为具名函数以通过 E731 并便于测试。
+    """
+    return (x == y) or bool(alt_b and alt_b.get(j) == x)
+
+
 def cmp_stream(a, b, name_a, name_b, alt_b=None):
     """逐块比对两个段落流。
 
@@ -474,7 +481,6 @@ def cmp_stream(a, b, name_a, name_b, alt_b=None):
     ok = 0
     problems = []
     # 先把 b 的等价候选映射成可查表, 用于逐个修正 opcode 内的明细
-    same = lambda x, y, j: (x == y) or (alt_b and alt_b.get(j) == x)
     sm = SequenceMatcher(None, a, b, autojunk=False)
     for tag, i1, i2, j1, j2 in sm.get_opcodes():
         if tag == 'equal':
@@ -484,7 +490,7 @@ def cmp_stream(a, b, name_a, name_b, alt_b=None):
         if tag in ('replace', 'insert') and (i2 - i1) == (j2 - j1):
             good = 0
             for k in range(i2 - i1):
-                if same(a[i1 + k], b[j1 + k], j1 + k):
+                if _is_same(a[i1 + k], b[j1 + k], j1 + k, alt_b):
                     good += 1
             if good == (i2 - i1):
                 ok += good
@@ -528,7 +534,6 @@ def verify(docx_path=None, md_path=None) -> dict:
         else:
             n_diff += 1
             sm = SequenceMatcher(None, w, m, autojunk=False)
-            same = sum(1 for _ in (x for x in []))
             for tag, i1, i2, j1, j2 in sm.get_opcodes():
                 if tag == 'equal':
                     cell_same += i2 - i1
@@ -597,14 +602,25 @@ def _print_report(r):
     print("【总判定】", "通过 ✓" if r['pass'] else "存在差异 ✗")
 
 
-if __name__ == '__main__':
+def main(argv=None):
+    """CLI 入口: 校验 Word 原文与生成 Markdown 的一致性。
+
+    返回码: 0 = 全部通过, 1 = 存在差异(便于 CI/构建流程直接判定)。
+    """
     import argparse
+
     from word2md import __version__
     ap = argparse.ArgumentParser(description='Word 与生成 Markdown 内容级一致性校验')
     ap.add_argument('--version', action='version', version=f'verify_consistency {__version__}')
     ap.add_argument('docx', nargs='?', help='输入 .docx 路径')
     ap.add_argument('md', nargs='?', help='生成 .md 路径')
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
     if not args.docx or not args.md:
         ap.error('需要同时提供 .docx 与 .md 路径')
-    _print_report(verify(args.docx, args.md))
+    report = verify(args.docx, args.md)
+    _print_report(report)
+    return 0 if report.get('pass') else 1
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())
