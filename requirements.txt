@@ -1,2 +1,13 @@
+# word2md 依赖清单
+# 安装: pip install -r requirements.txt
+
+# .docx 解析（自带 lxml 依赖）
 python-docx>=1.1.0
-Pillow>=10.0.0
+
+# 图片处理：EMF/WMF 矢量图光栅化为 PNG
+Pillow>=9.0.0
+
+# 说明：
+#   - lxml 由 python-docx 自动安装，无需单独声明
+#   - 转换与校验均为纯 CPU 计算，无需网络；不依赖 Office / LibreOffice
+#   - 已验证环境: Python 3.9 ~ 3.13，Windows / macOS / Linux

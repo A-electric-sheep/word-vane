@@ -226,15 +226,22 @@ def strip_md_inline(s):
     t = re.sub(r'\$([^$\n]+)\$', F0, t)
     # Markdown 链接 -> 仅标签文本。确定性括号配对(非正则):
     # 从右向左找 ')(' 结合点, 再向左配平嵌套 '['/']' 取标签段。
-    # 覆盖两种真实场景: [REG[1:0]...](#slug) 内嵌方括号标签(某寄存器文档),
-    # 以及 "REG[31:0]...可见[锚点](#slug)" 字面方括号后接链接(某参考手册)。
+    # 覆盖两种真实场景: [REG_A1[1:0]...](#slug) 内嵌方括号标签,
+    # 以及 "REG_B2[31:0]...可见[锚点](#slug)" 字面方括号后接链接。
+    search_from = 0
     while True:
-        m_close = t.find('](')
+        m_close = t.find('](', search_from)
         if m_close == -1:
             break
         i = t.find(')', m_close + 2)
         if i == -1:
             break
+        # 仅把 "(#锚点)" 视为链接目标。转换器生成的链接目标一律是 #slug;
+        # 而寄存器位域紧跟括号(如 "REG_A1[31:0](n=0~3)")会被误判为链接,
+        # 导致 "[31:0]" 方括号被吞掉, 必须排除(跳过该位置继续向后找)。
+        if not t[m_close + 2:i].lstrip().startswith('#'):
+            search_from = m_close + 2
+            continue
         j = m_close
         depth = 0
         while j >= 0:
@@ -250,6 +257,7 @@ def strip_md_inline(s):
             # 无配平 '[', 放弃该处(如孤立的 "[31:0]" 字面量)
             break
         t = t[:j] + t[j + 1:m_close] + t[i + 1:]
+        search_from = 0
     # 强调: 连续星号簇统一剥; 内容含中文的除外(源文档正文自带 * 字面星号, 非强调)
     def _em(m):
         inner = m.group(1)
@@ -295,7 +303,9 @@ def md_table_cells(table_html):
             if tag == 'td':
                 self.td_depth -= 1
                 if self.table_depth == 1 and self.td_depth == 0:
-                    n = norm(''.join(self.buf))
+                    # HTML 表格格内也可能含行内公式/强调/上下标, 需与段落同样
+                    # 走 strip_md_inline, 否则 $$LaTeX$$ 无法归一为 F0 占位
+                    n = norm(strip_md_inline(''.join(self.buf)))
                     if n.strip():
                         self.cells.append(n)
                     self.buf = []
@@ -311,7 +321,7 @@ def md_table_cells(table_html):
     return p.cells
 
 
-def md_parse(md_path):
+def md_parse(md_path, return_alt=False):
     content = open(md_path, encoding='utf-8').read()
     lines = content.split('\n')
     paras = []
@@ -319,6 +329,8 @@ def md_parse(md_path):
     in_code = False
     code_buf = []
     in_toc = False
+    # 段落索引 -> 等价候选文本(未剥离列表标记的形态), 供宽松比对
+    alt_map = {}
 
     def flush_code():
         nonlocal code_buf
@@ -328,6 +340,7 @@ def md_parse(md_path):
             code_buf = []
 
     i = 0
+    toc_line = False   # 目录态内是否已遇到过清单条目(用于判定目录自然结束)
     while i < len(lines):
         s = lines[i].strip()
         if not s:
@@ -343,21 +356,40 @@ def md_parse(md_path):
             code_buf.append(norm(s))
             i += 1
             continue
-        # 目录块
-        if re.match(r'^#{1,4} 目录$', s):
+        # 目录说明行(裸目录块, 无标题): 原文只有目录域、没有目录标题时,
+        # 转换器直接输出清单, 首行是本说明(中英文两版); 从该行起进入目录态
+        if (s.startswith('> 由 Word「目录」域转换的静态目录')
+                or s.startswith('> Static table of contents converted from the Word TOC field')):
+            in_toc = True
+            i += 1
+            continue
+        # 目录块(标题可能被加粗包裹, 如 "# **目录**"; 英文版标题为 Content/Contents)
+        if re.match(r'^#{1,4}\s*(?:目录|目\s*录|content|contents|table\s+of\s+contents)\s*$',
+                    re.sub(r'[*_]+', '', s).strip(), re.I):
             in_toc = True
             paras.append(norm(s.lstrip('#').strip()))
             i += 1
             continue
         if in_toc:
-            if s.startswith('>') or s.startswith('- [') or re.match(r'^\s*- \[', s):
+            if s.startswith('>'):
                 i += 1
                 continue
-            if re.match(r'^#{1,4} ', s):
-                in_toc = False
+            # 目录清单条目: "- xxx" / "- [xxx](#slug)" 及其缩进子项
+            if re.match(r'^\s*[-*+]\s', s):
+                toc_line = True
+                i += 1
                 continue
-            i += 1
-            continue
+            # 遇到标题即目录结束; 该标题必须继续走下面的常规处理(不能被吞掉,
+            # 否则终止目录的第一个正文标题会从 MD 侧缺失, 造成伪差异)
+            if re.match(r'^#{1,6} ', s):
+                in_toc = False
+            elif toc_line:
+                # 目录清单后出现的第一个非列表行 = 正文首段(正文标题可能没有
+                # # 前缀, 如英文 Datasheet 的 "General description"), 目录到此结束
+                in_toc = False
+            else:
+                i += 1
+                continue
         # 图片行
         if s.startswith('!['):
             i += 1
@@ -403,25 +435,61 @@ def md_parse(md_path):
             i += 1
             continue
         # 列表(剥离前缀)
-        s2 = re.sub(r'^\s*(?:[-*+]|\d+\.|[a-zA-Z]\.)\s+', '', s)
+        # 注意: Word 自动编号转出的列表标记有两种真实形态:
+        #   "**1.**** ****用...**"(编号与点号同段加粗)
+        #   "**2****. ****用...**"(编号与点号被加粗边界拆开)
+        # 仅剥离星号与空白, 不可剥离下划线 —— 否则 "_nop_();" 这类标识符
+        # 会被误伤成 "nop_();"。
+        # 编号后的点号不可紧跟数字 —— 否则正文 "1.5Kbytes" 会被误剥成 "5Kbytes"。
+        # 兜底剥离行首 # 标题标记: 转换器会把某些 Word 段落(如寄存器名)按
+        # outlineLvl 提升为标题, 而 Word 侧该文本是普通段落, 若不剥 "###### "
+        # 会造成纯前缀伪差异。
+        s = re.sub(r'^#{1,6}\s*', '', s)
+        s2 = re.sub(r'^(?:[*\s]*\d+[*\s]*\.(?!\d)[*\s]*|[*\s]+)', '', s)
+        s2 = re.sub(r'^(?:[-*+]|[a-zA-Z]\.)\s*', '', s2)
         t = norm(strip_md_inline(s2))
         if t:
             flush_code()
             paras.append(t)
+            # 记录"未剥标记"形态作为等价候选, 供 cmp_stream 做宽松匹配。
+            # Word 侧编号可能来自 numPr(文本无 "1."), 也可能手写在正文里
+            # (numId=0 取消自动编号), 后者若被剥离就与 Word 对不上。
+            t_keep = norm(strip_md_inline(s))
+            if t_keep and t_keep != t:
+                alt_map.setdefault(len(paras) - 1, t_keep)
         i += 1
     flush_code()
+    if return_alt:
+        return paras, tables, alt_map
     return paras, tables
 
 
-def cmp_stream(a, b, name_a, name_b):
-    sm = SequenceMatcher(None, a, b, autojunk=False)
+def cmp_stream(a, b, name_a, name_b, alt_b=None):
+    """逐块比对两个段落流。
+
+    alt_b: {索引: 等价文本} —— 同一块的可替代归一化形态(如"未剥离列表标记"
+    版本)。当主形态与 Word 不等而替代形态相等时, 视为一致, 避免因纯标记
+    差异产生伪差异。
+    """
     ok = 0
     problems = []
+    # 先把 b 的等价候选映射成可查表, 用于逐个修正 opcode 内的明细
+    same = lambda x, y, j: (x == y) or (alt_b and alt_b.get(j) == x)
+    sm = SequenceMatcher(None, a, b, autojunk=False)
     for tag, i1, i2, j1, j2 in sm.get_opcodes():
         if tag == 'equal':
             ok += i2 - i1
-        else:
-            problems.append((tag, i1, a[i1:i2], j1, b[j1:j2]))
+            continue
+        # replace/insert 区间里做逐对宽松匹配, 救回仅标记不同的块
+        if tag in ('replace', 'insert') and (i2 - i1) == (j2 - j1):
+            good = 0
+            for k in range(i2 - i1):
+                if same(a[i1 + k], b[j1 + k], j1 + k):
+                    good += 1
+            if good == (i2 - i1):
+                ok += good
+                continue
+        problems.append((tag, i1, a[i1:i2], j1, b[j1:j2]))
     return ok, len(a) if a else 1, problems
 
 
@@ -439,15 +507,12 @@ def verify(docx_path=None, md_path=None) -> dict:
       - ruby rt 注音两侧丢弃; vMerge cont 占位格与空单元格两侧跳过
       - 嵌套表文本并入所在格; 公式统一 F0 占位精确插位
     """
-    # [DESENSITIZED] 默认演示路径已移除(原为该工具内部芯片项目实测文档路径)。
-    # 两个参数均为必填, 缺一即报值错误:
     if not docx_path or not md_path:
-        raise ValueError('verify(docx_path, md_path) 两个参数均为必填('
-                         '例如 verify("input.docx", "output.md"))')
+        raise SystemExit('用法: python verify_consistency.py <输入.docx> <输出.md>')
     wpar, wtabs = word_parse(docx_path)
-    mpar, mtabs = md_parse(md_path)
+    mpar, mtabs, alt_map = md_parse(md_path, return_alt=True)
 
-    ok, total, probs = cmp_stream(wpar, mpar, 'Word', 'MD')
+    ok, total, probs = cmp_stream(wpar, mpar, 'Word', 'MD', alt_b=alt_map)
     problems = [p for p in probs if p[0] != 'equal']
 
     n_same = n_diff = 0
@@ -534,8 +599,12 @@ def _print_report(r):
 
 if __name__ == '__main__':
     import argparse
+    from word2md import __version__
     ap = argparse.ArgumentParser(description='Word 与生成 Markdown 内容级一致性校验')
+    ap.add_argument('--version', action='version', version=f'verify_consistency {__version__}')
     ap.add_argument('docx', nargs='?', help='输入 .docx 路径')
     ap.add_argument('md', nargs='?', help='生成 .md 路径')
     args = ap.parse_args()
+    if not args.docx or not args.md:
+        ap.error('需要同时提供 .docx 与 .md 路径')
     _print_report(verify(args.docx, args.md))

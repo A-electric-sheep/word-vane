@@ -32,8 +32,15 @@ import sys
 import zipfile
 from pathlib import Path
 
+# 版本号: 分发后用于区分行为差异, 修改转换逻辑时请同步递增
+__version__ = '1.0.0'
+
 import docx
+from docx.enum.style import WD_STYLE_TYPE
 from docx.oxml.ns import qn
+
+# 段落样式类型值(python-docx 1.x 为枚举 WD_STYLE_TYPE.PARAGRAPH)
+_PARA_STYLE = WD_STYLE_TYPE.PARAGRAPH
 from docx.table import Table
 from docx.text.paragraph import Paragraph
 
@@ -45,18 +52,28 @@ NS_VML = 'urn:schemas-microsoft-com:vml'
 DEFAULT_HEADING_STYLES = {'Title': 1, 'Heading 1': 1, 'Heading 2': 2, 'Heading 3': 3,
                           'Heading 4': 4, 'Heading 5': 5, 'Heading 6': 6,
                           '标题 1': 1, '标题 2': 2, '标题 3': 3, '标题 4': 4, '标题 5': 5,
-                          # 某匿名化 MCU 规格书自定义样式(内部项目 Datasheet 实测,
-                          # [DESENSITIZED] 原样式族名为厂商私有命名, 此处保留通用样式名示例)
+                          # [DESENSITIZED] 某类技术规格书的自定义章节样式族(实测多文档混用)
+                          # soc1-N 为一级~四级章节; SOC2-N 同为章节标题, 前缀数字
+                          # 只是不同产品线命名差异, 均需映射, 否则整章标题退化为纯文本
                           'soc1-1': 1, 'soc1-2': 2, 'soc1-3': 3, 'soc1-4': 4,
-                          # 同系列 TRM 一级章节标题样式(实测: 简介/文档约定/资源框图等 32 处)
-                          'SOC1': 1}
+                          # soc1-0 与 soc1-content 在英文版 Datasheet 中同样是一级
+                          # 章节标题(实测: Product Peripheral Resourse Table / Content)
+                          'soc1-0': 1, 'soc1-content': 1,
+                          'soc2-1': 1, 'soc2-2': 2, 'soc2-3': 3, 'soc2-4': 4,
+                          'soc3-1': 1, 'soc3-2': 2, 'soc3-3': 3, 'soc3-4': 4,
+                          # 多栏排版的小标题(实测: "主要功能"/"存储"/"时钟源" 等)
+                          'soc1多栏': 1, 'soc2多栏': 3, 'soc3多栏': 3,
+                          # [DESENSITIZED] 同系列技术参考手册一级章节标题样式(实测: 简介/文档约定/资源框图等 32 处)
+                          'SOC1': 1, 'SOC2': 1}
 DEFAULT_TOC_STYLES = {'toc 1': 1, 'toc 2': 2, 'toc 3': 3, 'toc 4': 4, 'toc 5': 1, 'TOC1': 1,
                       'TOC2': 2, 'TOC3': 3, 'TOC4': 4}
 
 CODE_PREFIXES = ('#include', '#define', 'unsigned', 'void ', 'static', 'typedef',
                  'int ', 'char ', 'long ', 'short ', 'float ', '/*', '//')
 RE_CODE_ASSIGN = re.compile(
-    r"^[A-Za-z_$][\w$]*\s*(?:\[[^\]]*\])?\s*=\s*[0-9A-Za-z_x$'\s\.\*\+\-\/\%\|&\[\]\(\)~]+"
+    r"^[A-Za-z_$][\w$\[\]\.\->]*\s*"
+    r"(?:<<=|>>=|\|=|&=|\+=|-=|\*=|/=|%=|\^=|=(?!=))\s*"
+    r"[0-9A-Za-z_x$'\s\.\*\+\-\/\%\|&\[\]\(\)~<>!]+"
     r"(?:\s*;\s*(?://.*)?)?$"
 )
 RE_CODE_CTRL = re.compile(r'^(?:\b(?:for|if|while|switch)\s*\(.*|\breturn\b.*|[\{\}])$')
@@ -68,7 +85,27 @@ def _looks_like_code(t: str) -> bool:
     for p in CODE_PREFIXES:
         if t.startswith(p):
             return True
-    return bool(RE_CODE_ASSIGN.match(t) or RE_CODE_CTRL.match(t))
+    if not (RE_CODE_ASSIGN.match(t) or RE_CODE_CTRL.match(t)):
+        return False
+    # 排除"数学关系式"被误判为 C 赋值语句: 形如
+    #   "Baud = clock/(((SEG1+2)+(SEG2+1))*(PRESC+1))"
+    #   "duty1 = duty0 * 2"
+    # 特征是右侧含算术运算且整行无分号结尾 —— C 赋值几乎总以 ';' 收尾,
+    # 而规格书里的公式关系式不会。这类文本更应保留为正文(或公式),
+    # 否则会被包进 ```c 代码块, 让 AI 误认为是可执行代码。
+    body = t.rstrip()
+    # 若以 ';' 或 '; //...' 收尾, 视为 C 语句(赋值/位运算), 保留代码块
+    if re.search(r';\s*(?://.*)?$', body):
+        return True
+    # 无分号时: 右侧出现 2 个以上英文单词(如 "CPHA = 1 data transfer diagram")
+    # 说明是说明性文字/图注, 不是表达式
+    rhs = body.split('=', 1)[1] if '=' in body else ''
+    if len(re.findall(r'[A-Za-z]{2,}', rhs)) >= 2:
+        return False
+    if re.search(r'[*/|&]', body):
+        # 无分号且含算术/位运算符 -> 数学关系式, 不是可执行语句
+        return False
+    return True
 
 
 def _slugify(text: str) -> str:
@@ -92,6 +129,10 @@ class Converter:
         self.heading_level = dict(DEFAULT_HEADING_STYLES)
         if heading_styles:
             self.heading_level.update(heading_styles)
+        # 样式名大小写不敏感索引: Word 文档中 SOC1-1 / soc1-1 混用极常见,
+        # 且部分文档 SOC1 为分页空段落、SOC1-1 才是一级标题(实测多份规格书均为该形态),
+        # 故统一用小写键查找, 空标题段落由调用处跳过。
+        self._heading_ci = {k.strip().lower(): v for k, v in self.heading_level.items()}
         self.toc_level = dict(DEFAULT_TOC_STYLES)
         if toc_styles:
             self.toc_level.update(toc_styles)
@@ -102,6 +143,14 @@ class Converter:
 
         # 编号系统(键务必为 int — 历史 bug: str 键导致编号列表全部退化为 bullet)
         self.num2abs, self.ABSTRACT = self._load_numbering()
+
+        # 样式查表缓存(需在预扫描前就绪: _heading_level_of 会用到)
+        self._style_name_cache = {}
+        self._style_obj_cache = {}
+        try:
+            self._style_default_name = self.doc.styles.default(_PARA_STYLE).name or ''
+        except Exception:
+            self._style_default_name = 'Normal'
 
         # 预扫描: 标题 bookmarks -> slug
         self.anchor2slug: dict[str, str] = {}
@@ -115,8 +164,27 @@ class Converter:
         self.tables_html = 0
         self.code_blocks = 0
         self.formula_blocks = 0
+        # 目录域自身的标题文字(如 "目录" / "Content"), 供无正文目录标题时复用
+        self.toc_title = ''
+        self._cjk_cache = None
+        # 标题判定上下文: 上一块是否为图片(用于排除图片说明文字被当成标题)
+        self._prev_block_had_image = False
 
     # ---------- 辅助 ----------
+    def _is_cjk_doc(self):
+        """按正文 CJK 字符占比判断文档语种(用于目录标题/图注文案)"""
+        if self._cjk_cache is not None:
+            return self._cjk_cache
+        sample = ''
+        for p in self.doc.paragraphs[:200]:
+            sample += p.text or ''
+        if not sample:
+            self._cjk_cache = True
+            return True
+        cjk = sum(1 for ch in sample if '\u4e00' <= ch <= '\u9fff')
+        self._cjk_cache = cjk * 20 >= len(sample)
+        return self._cjk_cache
+
     def _load_numbering(self):
         try:
             num_xml = self.z.read('word/numbering.xml').decode('utf8', 'ignore')
@@ -134,18 +202,50 @@ class Converter:
             abstract[int(aid)] = lvls
         return num2abs, abstract
 
-    def _num_fmt_of(self, p_el):
+    def _num_fmt_of(self, p_el, para=None):
+        """返回 (numId, ilvl) 或 None。
+
+        Word 的列表编号既可以写在段落 pPr/numPr 上, 也可以由**样式**携带
+        (pStyle -> style/pPr/numPr)。中文规格书大量使用后者, 只读段落会漏掉
+        绝大部分列表(实测单批 3493 段样式级编号中 97% 被压平为普通段落)。
+        因此需沿样式链继承。
+        """
         pPr = p_el.find(qn('w:pPr'))
-        if pPr is None:
-            return None
-        numPr = pPr.find(qn('w:numPr'))
-        if numPr is None:
-            return None
-        nid = numPr.find(qn('w:numId'))
-        ilvl = numPr.find(qn('w:ilvl'))
-        if nid is None or nid.get(qn('w:val')) is None:
-            return None
-        return (int(nid.get(qn('w:val'))), int(ilvl.get(qn('w:val'))) if ilvl is not None else 0)
+        numPr = pPr.find(qn('w:numPr')) if pPr is not None else None
+
+        # 段落自身优先; 若仅指定 ilvl 未指定 numId, 仍需回落到样式取 numId
+        if numPr is not None:
+            nid = numPr.find(qn('w:numId'))
+            ilvl = numPr.find(qn('w:ilvl'))
+            nv = nid.get(qn('w:val')) if nid is not None else None
+            iv = ilvl.get(qn('w:val')) if ilvl is not None else None
+            if nv is not None and nv != '0':
+                return (int(nv), int(iv) if iv is not None else 0)
+
+        # 沿样式链继承(按 styleId 走缓存, 避免 python-docx 全表查找)
+        style = self._style_obj_of(p_el) if para is not None else None
+        cur = style
+        hops = 0
+        while cur is not None and hops < 6:
+            hops += 1
+            el = getattr(cur, 'element', None)
+            if el is not None:
+                spPr = el.find(qn('w:pPr'))
+                sNum = spPr.find(qn('w:numPr')) if spPr is not None else None
+                if sNum is not None:
+                    nid = sNum.find(qn('w:numId'))
+                    nv = nid.get(qn('w:val')) if nid is not None else None
+                    if nv is not None and nv != '0':
+                        ilvl = sNum.find(qn('w:ilvl'))
+                        iv = ilvl.get(qn('w:val')) if ilvl is not None else None
+                        # 段落若显式给了 ilvl, 以段落为准
+                        if numPr is not None:
+                            pi = numPr.find(qn('w:ilvl'))
+                            if pi is not None and pi.get(qn('w:val')) is not None:
+                                iv = pi.get(qn('w:val'))
+                        return (int(nv), int(iv) if iv is not None else 0)
+            cur = getattr(cur, 'base_style', None)
+        return None
 
     def _blocks(self):
         """body 直接子元素块序列; w:sdt(Word 自动目录等结构化容器)下钻取其内容"""
@@ -164,14 +264,181 @@ class Converter:
                         elif sub.tag == qn('w:tbl'):
                             yield Table(sub, self.doc)
 
+    def _img_caption(self, seq):
+        """图片 alt 文案按文档语种生成, 避免英文文档出现中文图注"""
+        return f'图 {seq}' if self._is_cjk_doc() else f'Figure {seq}'
+
+    def _looks_like_subheading(self, text):
+        """判断文本是否像"小标题"而非正文/条目/图注。
+
+        用于区分 SOC2tex(小标题) 与 SOC1tex(正文段或图注)、soc2cir(条目)。
+        (以上为样式族命名示例, 非任何具体产品标识)
+        小标题特征: 短、不以标点收尾、无句号式陈述。
+        """
+        t = (text or '').strip()
+        if not t or len(t) > 20:
+            return False
+        # 句末标点 = 陈述句, 不是标题
+        if t[-1] in '。；;，,：:！!？?、.':
+            return False
+        # 句中含句读 = 正文长句被折断, 不是标题
+        if re.search(r'[。；;，,]', t):
+            return False
+        if re.match(r'^[A-Za-z0-9_\-\.]+\s*[:：]', t):
+            return False
+        # 图注/表注("图 3 xxx"/"表 5-1 xxx"/"Figure 3 xxx")不是章节标题
+        if re.match(r'^(图|表|Figure|Table)\s*[\d一二三四五六七八九十]', t, re.I):
+            return False
+        # 含数值+单位的条目(如 "1.8V~5.5V")不是标题
+        if re.search(r'\d\s*(?:V|A|mA|Hz|MHz|KHz|℃|%|ms|us|ns|bit|byte)', t, re.I):
+            return False
+        return True
+
+    def _style_obj_of(self, p_el):
+        """按 pStyle styleId 取样式对象(带缓存), 供编号/标题判定使用"""
+        pPr = p_el.find(qn('w:pPr'))
+        sid = None
+        if pPr is not None:
+            ps = pPr.find(qn('w:pStyle'))
+            if ps is not None:
+                sid = ps.get(qn('w:val'))
+        if sid is None:
+            return None
+        if sid in self._style_obj_cache:
+            return self._style_obj_cache[sid]
+        obj = None
+        try:
+            obj = self.doc.styles.get_by_id(sid, _PARA_STYLE)
+        except Exception:
+            obj = None
+        self._style_obj_cache[sid] = obj
+        return obj
+
+    def _style_name_of(self, p_el):
+        """按段落 pStyle 的 styleId 取样式名(带缓存)。
+
+        python-docx 的 Paragraph.style 属性每次都调用 styles.get_by_id ->
+        default_for 遍历整张样式表, 大文档上会退化成 O(n*m)。这里直接读
+        pPr/pStyle 的 val(styleId), 用字典缓存 styleId -> 样式名。
+        """
+        pPr = p_el.find(qn('w:pPr'))
+        sid = None
+        if pPr is not None:
+            ps = pPr.find(qn('w:pStyle'))
+            if ps is not None:
+                sid = ps.get(qn('w:val'))
+        if sid is None:
+            return self._style_default_name
+        cached = self._style_name_cache.get(sid)
+        if cached is not None:
+            return cached
+        name = ''
+        try:
+            st = self.doc.styles.get_by_id(sid, _PARA_STYLE)
+            name = st.name or ''
+        except Exception:
+            name = ''
+        self._style_name_cache[sid] = name
+        return name
+
+    def _heading_level_of(self, para_or_el):
+        """返回段落的大纲级别(1-6), 非标题返回 None。
+
+        判定优先级:
+          1) 样式名命中映射表(大小写不敏感) —— 高置信, 直接采用
+          2) 段落/样式自身的 w:outlineLvl —— 兜底, 但需通过合理性校验
+        注意:
+          - **不使用 basedOn 继承链**。实测此类正文样式 basedOn 为
+            "Heading 5", 但语义上只是三级小标题, 按继承链会误判大量段落为 h5。
+          - outlineLvl 兜底限 1~4 级且排除"寄存器名/位域名"式文本。Word 里
+            寄存器小节标题常被设 outlineLvl=5, 强行提升会产出 100+ 个 h5/h6
+            标题并造成 30+ 处层级跳级, 反而破坏 AI 的章节导航。
+        """
+        p_el = getattr(para_or_el, '_p', para_or_el)
+        # 性能: python-docx 的 paragraph.style 每次都会遍历样式表(实测单文档
+        # 3378 次调用耗 41s), 这里改为按 pStyle 的 styleId 走缓存查表
+        sname = self._style_name_of(p_el)
+
+        lv = self._heading_ci.get(sname.strip().lower())
+        if lv:
+            return lv
+
+        text = ''.join(t.text or '' for t in p_el.findall('.//' + qn('w:t'))).strip()
+        if not text:
+            return None
+
+        def plausible(level):
+            """outlineLvl / 样式名的合理性校验"""
+            # 兜底最多产出 h4: 更深层级的 outlineLvl 通常对应"寄存器小节/模式
+            # 列举"等表项式文本, 提升为 h5/h6 会与现有 h2/h3 骨架错位, 产生
+            # 大量层级跳级, 反而降低 AI 的章节导航质量
+            if level > 4:
+                return None
+            # 寄存器/位域条目形如 "REG_A1 (83H@FFH) System Clock ..." /
+            # "REG_B2 (F7H) ..." —— 语义是表项而非章节, 不提升为标题
+            if re.match(r'^[A-Z][A-Z0-9_]{1,15}\s*[（(]\s*[0-9A-Fa-f]{1,4}[Hh]', text):
+                return None
+            if len(text) > 90:
+                return None
+            return level
+
+        # 样式名启发式(仅针对 outlineLvl 兜底之前): 此类规格书文档里
+        #   SOC2tex / soc1tex  -> 小标题("工作条件"、"EMS"、"封装类型")
+        #   SOC2cir / soc2squ / soczw* -> 内容条目(非标题)
+        # 二者仅靠样式名难以区分, 用"是否像标题"的文本特征判定。
+        m_tex = re.match(r'^(?:soc\d(?:tex)\w*|soc\d多栏)$', sname.strip().lower())
+        if m_tex and not getattr(self, '_prev_block_had_image', False) \
+                and self._looks_like_subheading(text):
+            # 依附于该文档已出现的最深 h1/h2 之下, 取 h3
+            return 3
+
+        # 段落直接的 outlineLvl
+        pPr = p_el.find(qn('w:pPr'))
+        if pPr is not None:
+            ol = pPr.find(qn('w:outlineLvl'))
+            if ol is not None:
+                try:
+                    v = int(ol.get(qn('w:val')))
+                except (TypeError, ValueError):
+                    v = None
+                if v is not None and 0 <= v <= 8:
+                    hit = plausible(min(v + 1, 4))
+                    if hit:
+                        return hit
+
+        # 样式自身定义的 outlineLvl(不用 basedOn 链, 见 docstring)
+        style = self._style_obj_of(p_el)
+        if style is not None:
+            el = getattr(style, 'element', None)
+            if el is not None:
+                ol = el.find(qn('w:pPr') + '/' + qn('w:outlineLvl'))
+                if ol is not None:
+                    try:
+                        v = int(ol.get(qn('w:val')))
+                    except (TypeError, ValueError):
+                        v = None
+                    if v is not None and 0 <= v <= 8:
+                        hit = plausible(min(v + 1, 4))
+                        if hit:
+                            return hit
+        return None
+
     def _prescan_headings(self):
         used = set()
+        prev_img = False
         for blk in self._blocks():
             if not isinstance(blk, Paragraph):
+                prev_img = False
                 continue
-            if blk.style.name not in self.heading_level:
+            # 保持与渲染阶段一致的上下文(上一块是否为图), 否则两阶段的
+            # 标题集合会不一致, 导致目录锚点与正文标题对不上
+            self._prev_block_had_image = prev_img
+            prev_img = bool(self._para_imagedata(blk._p))
+            if self._heading_level_of(blk) is None:
                 continue
             text = ''.join(t.text or '' for t in blk._p.findall('.//' + qn('w:t'))).strip()
+            if not text:
+                continue
             slug = _slugify(text) or 'sec'
             base, n = slug, 1
             while slug in used:
@@ -259,7 +526,35 @@ class Converter:
         return txt
 
     def rich_runs(self, el):
-        parts = []
+        """渲染段落内联内容。
+
+        内部先收集 [(kind, payload, bold, italic, script)] 片段, 末尾把**相邻且
+        格式完全相同**的文本片段合并后再统一包裹强调语法。Word 把一个视觉连续的
+        加粗短语拆成多个 run 时(中文规格书极常见), 逐 run 包裹会产出大量
+        `****` 接缝(实测单文档可达 1500+ 处), 严重干扰 AI 阅读与检索。
+        """
+        segs = []   # ('text', str, b, i, v) 或 ('raw', str)
+
+        def add_text(txt, b, i, v):
+            if not txt:
+                return
+            # 上下标先就地内联成标签, 使合并键只含 (bold, italic) ——
+            # 否则 "<sub>SYS</sub>" 与前后同粗体文本因 vertAlign 不同而无法合并,
+            # 残留 "**f****<sub>SYS</sub>****）：**" 这类接缝
+            if v == 'subscript':
+                txt = '<sub>' + txt + '</sub>'
+            elif v == 'superscript':
+                txt = '<sup>' + txt + '</sup>'
+            if segs and segs[-1][0] == 'text':
+                _, prev, pb, pi_ = segs[-1]
+                if (pb, pi_) == (b, i):
+                    segs[-1] = ('text', prev + txt, b, i)
+                    return
+            segs.append(('text', txt, b, i))
+
+        def add_raw(s):
+            if s:
+                segs.append(('raw', s))
 
         def walk(node):
             for child in node:
@@ -275,15 +570,31 @@ class Converter:
                         rb = ruby.find(qn('w:rubyBase'))
                         if rb is not None:
                             txt = ''.join(t.text or '' for t in rb.findall('.//' + qn('w:t')))
-                            if txt:
-                                parts.append(self._wrap(txt, b, i, v))
+                            add_text(txt, b, i, v)
                         continue
                     txt = ''.join(t.text or '' for t in child.findall(qn('w:t')))
-                    if txt:
-                        parts.append(self._wrap(txt, b, i, v))
+                    add_text(txt, b, i, v)
                 elif tag == qn('w:hyperlink'):
                     anchor = child.get(qn('w:anchor'))
-                    inner = []
+                    # 超链接内同样要把"相邻同格式"的 run 合并后再包裹强调,
+                    # 否则会产出 "[**2****7.10ADC****电气特性**](#...)" 这类
+                    # 碎片(实测多份 Datasheet 的交叉引用处)
+                    inner_segs = []
+
+                    def add_inner(txt, b, i, v):
+                        if not txt:
+                            return
+                        if v == 'subscript':
+                            txt = '<sub>' + txt + '</sub>'
+                        elif v == 'superscript':
+                            txt = '<sup>' + txt + '</sup>'
+                        if inner_segs and inner_segs[-1][0] == 'text':
+                            _, prev, pb, pi_ = inner_segs[-1]
+                            if (pb, pi_) == (b, i):
+                                inner_segs[-1] = ('text', prev + txt, b, i)
+                                return
+                        inner_segs.append(('text', txt, b, i))
+
                     for r in child.findall(qn('w:r')):
                         rPr = r.find(qn('w:rPr'))
                         hidden = rPr is not None and rPr.find(qn('w:webHidden')) is not None
@@ -291,22 +602,22 @@ class Converter:
                             continue
                         b, i, v = self._run_fmt(r)
                         t = ''.join(x.text or '' for x in r.findall(qn('w:t')))
-                        if t:
-                            inner.append(self._wrap(t, b, i, v))
-                    label = ''.join(inner)
+                        add_inner(t, b, i, v)
+                    label = ''.join(self._wrap(s[1], s[2], s[3], None)
+                                    for s in inner_segs if s[0] == 'text')
                     if anchor and anchor in self.anchor2slug:
-                        parts.append(f'[{label}](#{self.anchor2slug[anchor]})')
+                        add_raw(f'[{label}](#{self.anchor2slug[anchor]})')
                     else:
-                        parts.append(label)
+                        add_raw(label)
                 elif tag == qn('w:tab'):
-                    parts.append('\t')
+                    add_raw('\t')
                 elif tag == qn('w:br'):
-                    parts.append('\n')
+                    add_raw('\n')
                 elif tag == qn('w:pict'):
                     for im in child.findall('.//{' + NS_VML + '}imagedata'):
                         rid = im.get(qn('r:id'))
                         if rid:
-                            parts.append('[[IMG:' + rid + ']]')
+                            add_raw('[[IMG:' + rid + ']]')
                 elif tag == qn('w:ruby'):
                     rb = child.find(qn('w:rubyBase'))
                     if rb is not None:
@@ -317,24 +628,48 @@ class Converter:
                                 continue
                             b, i, v = self._run_fmt(r)
                             t = ''.join(x.text or '' for x in r.findall(qn('w:t')))
-                            if t:
-                                parts.append(self._wrap(t, b, i, v))
+                            add_text(t, b, i, v)
                 elif tag == qn('w:instrText') or tag == qn('w:fldChar'):
                     continue
                 elif tag == qn('m:oMathPara'):
-                    parts.append('$$' + omml2latex(child) + '$$')
+                    add_raw('$$' + omml2latex(child) + '$$')
                     self.formula_blocks += 1
                 elif tag == qn('m:oMath'):
-                    parts.append('$' + omml2latex(child) + '$')
+                    add_raw('$' + omml2latex(child) + '$')
                     self.formula_blocks += 1
-                elif tag in (qn('w:sdt'), qn('w:sdtContent'), qn('w:ins'),
-                             qn('w:smartTag'), qn('w:dir'), qn('w:noProof')):
-                    walk(child)
                 else:
                     walk(child)
 
         walk(el)
-        return ''.join(parts)
+        out = []
+        for seg in segs:
+            if seg[0] == 'raw':
+                out.append(seg[1])
+            else:
+                _, txt, b, i = seg
+                out.append(self._wrap(txt, b, i, None))
+        return self._seal_emphasis(''.join(out))
+
+    def _seal_emphasis(self, s):
+        """消除强调接缝 `****`。
+
+        合并同类相邻 run 之后仍有几种残留接缝:
+          - 超链接元素夹在加粗文本中间: "**...的**[**ADC**](#x)**。**"
+            会输出 "...的**[" 形式, 形成 "...**[" 与 "]**。**" 的相邻 `****`
+          - 表格 HTML 单元格内跨 <p> 的加粗
+        这里做纯文本层面的安全收口: 把 "****" 折叠为 "**", 并清理
+        "**[" / "]**" 边界处的多余标记。仅在 strip_emphasis 关闭时执行。
+        """
+        if self.strip_emphasis or '****' not in s:
+            return s
+        # 接缝的本质: "…**" 紧跟 "**…" 时, 闭合与开启彼此抵消, 只剩一个开区间。
+        # 反复消除 "**" + "**" 的边界, 直到稳定; 再把残留 >=3 的星号簇压成 2。
+        prev = None
+        while prev != s:
+            prev = s
+            s = s.replace('****', '')
+        s = re.sub(r'\*{3,}', '**', s)
+        return s
 
     # ---------- 目录解析 ----------
     def _parse_toc_entry(self, p_el):
@@ -390,7 +725,30 @@ class Converter:
             if parts and re.match(r'^\d+$', parts[-1]):
                 parts = parts[:-1]
             label = ' '.join(parts).strip()
-        if not label or not label.strip() or label.strip() in ('目录', '目录（Contents）'):
+
+        # 兜底 3: 页码直接粘在标题尾部(无 w:tab 分隔), 如
+        #   "TWI0/1 register mapping122" -> "TWI0/1 register mapping"
+        # 仅当尾部数字 ≥2 位且剥离后标题仍非空时处理, 避免误删
+        # "Operating Mode 0" / "Timer0" 这类本身含数字的标题。
+        if label and label.strip():
+            s = label.strip()
+            # 尾部数字前若是 "/" "~" "-" "." 等连接符, 说明它属于标题本身
+            # (如 "SPI0/1"、"INT0~15"、"TIMER0-3"), 不是页码, 不可剥离
+            m_tail = re.match(r'^(.*?[^\d\s])\s*(\d{2,4})$', s)
+            if m_tail:
+                head = m_tail.group(1)
+                if len(head) >= 4 and not re.search(r'[/\-–—\.\~～]$', head):
+                    # 再排除"数字范围"整体: 形如 "INT0~15"/"P0.0-P0.7",
+                    # 剥离后会留下悬空连接符, 视为标题自带内容
+                    if not re.search(r'\d\s*[\~\-\u2013\u2014]\s*$', head):
+                        label = head.strip()
+        if not label or not label.strip():
+            return None
+        # 过滤目录自引用条目: 目录域里常把"目录"/"Content"自身也列进去,
+        # 页码可能是 1~2 位(如 "目录9"、"Content2"), 故先剥尾部页码再判等
+        bare = re.sub(r'\s*\d{1,4}$', '', label.strip()).strip()
+        if bare in ('目录', '目录（Contents）', 'Content', 'Contents',
+                    'Table of Contents', '目 录'):
             return None
         return label.strip(), anchor
 
@@ -644,7 +1002,7 @@ class Converter:
         for direct in tc_el:
             if direct.tag == qn('w:p'):
                 parts.append(self.rich_runs(direct))
-        # 多段落以换行连接(输出管线将 \n 转 <br>), 避免多段说明(如某寄存器分频配置逐项)
+        # 多段落以换行连接(输出管线将 \n 转 <br>), 避免多段说明(QTWCK 分频逐项)
         # 粘成一行; 空段跳过防止产生孤立 <br>
         return '\n'.join(p.strip() for p in parts if p.strip()).strip()
 
@@ -727,7 +1085,29 @@ class Converter:
         return lines
 
     def _para_imagedata(self, p_el):
-        return p_el.findall('.//{' + NS_VML + '}imagedata')
+        """收集段落内所有图片引用 rId(保序、去重)。
+
+        必须同时覆盖两种图片容器, 否则会整段丢图:
+          - VML:       <w:pict>/<v:imagedata r:id="...">       (老式/兼容模式)
+          - DrawingML: <w:drawing>/<a:blip r:embed="...">      (Word 2007+ 默认)
+        历史缺陷: 早期实现只扫 VML, 导致全部 DrawingML 图片丢失, 而"产品命名规则"
+        等章节的唯一内容就是一张图, 整节因此变空。
+        """
+        rids = []
+        seen = set()
+
+        def push(rid):
+            if rid and rid not in seen:
+                seen.add(rid)
+                rids.append(rid)
+
+        # VML
+        for im in p_el.findall('.//{' + NS_VML + '}imagedata'):
+            push(im.get(qn('r:id')))
+        # DrawingML (a:blip 用 r:embed; 少数用 r:link)
+        for blip in p_el.findall('.//' + qn('a:blip')):
+            push(blip.get(qn('r:embed')) or blip.get(qn('r:link')))
+        return rids
 
     # ---------- 主转换 ----------
     def convert(self, out_dir: str, extract_images: bool = True) -> dict:
@@ -741,6 +1121,16 @@ class Converter:
         list_counters: dict = {}
         code_buf: list[str] = []
         pending_blank = False
+        in_list = False   # 是否处于列表块中(用于列表结束后补空行)
+        prev_heading_lv = 0   # 上一个已输出标题的层级(用于压平跳级)
+
+        def break_list():
+            """列表块结束: 补空行, 避免后续内容被 GFM 并入最后一个列表项"""
+            nonlocal in_list
+            if in_list:
+                if lines and lines[-1] != '':
+                    lines.append('')
+                in_list = False
 
         def flush_code():
             nonlocal code_buf
@@ -753,25 +1143,28 @@ class Converter:
                 self.code_blocks += 1
             code_buf = []
 
+        prev_had_image = False
         for blk in self._blocks():
             if isinstance(blk, Paragraph):
-                style = blk.style.name
                 p_el = blk._p
+                style = self._style_name_of(p_el)   # 走缓存, 避免全表遍历
                 pure = ''.join(t.text or '' for t in p_el.findall('.//' + qn('w:t'))).strip()
                 txt = self.rich_runs(p_el).strip()
                 imgs = self._para_imagedata(p_el)
+                # 上一块是图片、本块是短文本 -> 这是图片说明文字(图注),
+                # 不应当作章节标题; 记入供标题判定排除
+                self._prev_block_had_image = prev_had_image
+                prev_had_image = bool(imgs)
 
                 if imgs:
+                    break_list()
                     flush_code()
                     if txt and '[[IMG:' not in txt:
                         lines.append(txt)
                         lines.append('')
-                    for im in imgs:
-                        rId = im.get(qn('r:id'))
-                        if not rId:
-                            continue
+                    for rId in imgs:
                         self.img_seq += 1
-                        lines.append(f'![图 {self.img_seq}]({self._img_rel_path(rId)})')
+                        lines.append(f'![{self._img_caption(self.img_seq)}]({self._img_rel_path(rId)})')
                         lines.append('')
                     continue
 
@@ -780,6 +1173,7 @@ class Converter:
                         pending_blank = True
                         continue
                     if txt:
+                        break_list()
                         flush_code()
                         lines.append(txt)
                         lines.append('')
@@ -802,18 +1196,44 @@ class Converter:
                         toc_entries.append((self.toc_level[style], label, target))
                     continue
 
-                if style in self.heading_level:
+                hlv = self._heading_level_of(blk)
+                if hlv and txt:
+                    break_list()
                     flush_code()
-                    lv = self.heading_level[style]
-                    lines.append('#' * lv + ' ' + txt)
+                    # 层级连续性约束: 若当前级别比上一标题深超过 1 级(如 h1 后
+                    # 直接出现 Heading 5 的"工作条件"), 压到 prev+1。
+                    # 源文档常把正文小标题设成 Heading 5, 直接照搬会产生
+                    # h1->h5 的断裂层级, 破坏 AI 的章节树导航。
+                    lv = hlv
+                    if prev_heading_lv and lv > prev_heading_lv + 1:
+                        lv = prev_heading_lv + 1
+                    prev_heading_lv = lv
+                    # 标题本身已是结构强调, 内部再保留 ** 只会产生
+                    # "# **主要功能**" 这类噪声(实测 7 份文档 26 处), 故剥离
+                    head_txt = re.sub(r'\*{1,3}', '', txt).strip()
+                    lines.append('#' * lv + ' ' + head_txt)
                     lines.append('')
                     self.heading_count += 1
-                    if pure == '目录' and self.include_toc:
+                    txt = head_txt
+                    if not self.toc_title and pure:
+                        # 记录正文中的目录标题(中文"目录"/英文"Content"等),
+                        # 供目录域无原位标题时复用, 避免凭空造标题
+                        if re.fullmatch(r'\s*(目录|目\s*录|content|contents|table of contents)\s*',
+                                        pure, re.I):
+                            self.toc_title = pure
+                    # 目录标题命中时原位放占位符: 中英文版本都能把目录块渲染在
+                    # 原文目录标题之下, 而不是一律塞到文首再造一个标题
+                    if self.include_toc and re.fullmatch(
+                            r'\s*(目录|目\s*录|content|contents|table of contents)\s*', pure, re.I):
                         lines.append('<<TOC_PLACEHOLDER>>')
                         lines.append('')
                     continue
 
-                nf = self._num_fmt_of(p_el)
+                nf = self._num_fmt_of(p_el, blk)
+                if nf and re.match(r'^\s*(?:\d+\.|[a-zA-Z]\.|[（(]\d+[）)]|[-–—•·▪])\s', txt):
+                    # 正文自带编号前缀(如 "2. Set ADCIS...")且样式又挂了 numPr 时,
+                    # 再套一层自动编号会变成 "56. 2. Set ..." 双编号, 故不生成标记
+                    nf = None
                 if nf:
                     flush_code()
                     nid, ilvl = nf
@@ -833,6 +1253,7 @@ class Converter:
                     else:
                         marker = f'{idx}. '
                     lines.append(indent + marker + txt)
+                    in_list = True
                     continue
 
                 if self.code_heuristics and _looks_like_code(pure) and 'IMG:' not in txt:
@@ -845,9 +1266,13 @@ class Converter:
                     pending_blank = False
                     flush_code()
 
+                # 列表块结束时补空行: 否则紧随其后的正文会被 GFM 解析器并入
+                # 最后一个列表项(实测 21 处), 破坏段落边界与 AI 的分段理解
+                break_list()
                 lines.append(txt)
                 lines.append('')
             else:
+                break_list()
                 flush_code()
                 lines.extend(self._render_table(blk._tbl))
                 lines.append('')
@@ -857,7 +1282,10 @@ class Converter:
         body = '\n'.join(lines)
 
         # 目录块原位注入
-        toc_note = '> 由 Word「目录」域转换的静态目录，点击条目可跳转到对应章节。'
+        toc_note = ('> 由 Word「目录」域转换的静态目录，点击条目可跳转到对应章节。'
+                    if self._is_cjk_doc() else
+                    '> Static table of contents converted from the Word TOC field; '
+                    'each entry links to its section.')
         toc_body_lines = [toc_note, '']
         for lv, label, target in toc_entries:
             indent = '  ' * max(0, lv - 1)
@@ -870,11 +1298,18 @@ class Converter:
         if self.include_toc:
             if placeholder in body:
                 body = body.replace(placeholder, toc_body, 1)
-            elif not toc_entries and '目录' not in body:
-                # 无目录域且文档里没有「目录」标题: 完全跳过目录输出
+            elif not toc_entries:
+                # 无目录域: 完全跳过目录输出
                 pass
-            elif '目录' not in body:
-                body = '## 目录\n\n' + toc_body + '\n\n' + body
+            elif self.toc_title:
+                # 原文正文里有目录标题(中文"目录"/英文"Content"), 但目录域未紧邻
+                # 标题: 用原文标题兜底, 保证标题文字来自原文档而非杜撰
+                body = f'## {self.toc_title}\n\n' + toc_body + '\n\n' + body
+            else:
+                # 原文没有目录标题(仅裸目录域, 多见于英文 Datasheet): 直接输出
+                # 目录清单, 不杜撰标题 —— 否则会多出一个原文不存在的块,
+                # 破坏与 Word 的逐段一致性
+                body = toc_body + '\n\n' + body
         else:
             body = body.replace(placeholder, '', 1) if placeholder in body else body
 
@@ -913,7 +1348,9 @@ def convert_word_to_markdown(src_path, out_dir=None, **kwargs) -> dict:
     返回: 统计 dict(含 md_path / warnings / 各类计数)"""
     src_path = str(src_path)
     if not os.path.isfile(src_path):
-        raise FileNotFoundError(src_path)
+        raise FileNotFoundError(
+            f'找不到文件: {src_path}\n'
+            f'请检查路径是否正确(当前目录: {os.getcwd()})')
     if not src_path.lower().endswith(('.docx', '.doc')):
         # .doc 需先转 docx, 给出明确提示
         if src_path.lower().endswith('.doc'):
@@ -938,6 +1375,8 @@ def convert_word_to_markdown(src_path, out_dir=None, **kwargs) -> dict:
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description='通用 Word(.docx) -> Markdown 转换器')
+    ap.add_argument('--version', action='version',
+                    version=f'word2md {__version__}')
     ap.add_argument('input', help='输入 .docx 文件')
     ap.add_argument('-o', '--output-dir', default=None, help='输出目录(缺省: 输入旁 <名>_md)')
     ap.add_argument('--no-images', action='store_true', help='不提取图片')
