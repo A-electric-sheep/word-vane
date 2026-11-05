@@ -109,3 +109,39 @@ def test_readme_credits_docx2md_verify():
     text = _readme_text()
     assert 'docx2md' in text, '应致谢并区分 docx2md 的 verify 能力'
     assert '首创' in text, '应明确说明校验非本项目首创'
+
+
+def test_pypi_name_is_not_word2md():
+    """分发名不得为 `word2md`——该名字在 PyPI 已被他人占用（hnrobert/word2md）。
+
+    这条测试防的是"有人顺手把 name 改回 word2md，发布时才发现被占用或误装
+    成别人的包"。安装名用 word-vane，导入名与命令仍是 word2md。
+    """
+    text = (REPO / 'pyproject.toml').read_text(encoding='utf-8')
+    m = re.search(r'^name\s*=\s*"([^"]+)"', text, re.M)
+    assert m, 'pyproject 未声明 name'
+    assert m.group(1) == 'word-vane', (
+        f'分发名应为 word-vane，实际为 {m.group(1)}；'
+        'PyPI 上的 word2md 属于另一个项目')
+
+
+def test_readme_install_command_matches_package_name():
+    """README 的 pip install 命令必须与 pyproject 的分发名一致。"""
+    pkg = re.search(r'^name\s*=\s*"([^"]+)"',
+                    (REPO / 'pyproject.toml').read_text(encoding='utf-8'),
+                    re.M).group(1)
+    text = _readme_text()
+    # 注意要排除 `pip install -e ".[dev]"` 这种从当前目录安装的写法，
+    # 否则会把 "." 误当成包名。
+    installs = set(re.findall(
+        r'pip install (?!-e )(?:"([^"]+)"|([a-zA-Z0-9_.-]+))', text))
+    flat = set()
+    for a, b in installs:
+        token = (a or b).strip()
+        if token and token != '.' and not token.startswith('.'):
+            flat.add(token.split('[')[0])
+    # 允许的安装目标：本包、本包带 extras、以及第三方对照项目
+    third_party = {'anydoc', 'docling', 'marker-pdf', 'mineru', 'pandoc',
+                   'firecrawl-anydoc', 'docx2md'}
+    wrong = {i for i in flat if i not in third_party and i != pkg}
+    assert not wrong, f'README 出现了非本包的安装名: {wrong}（本包应为 {pkg}）'

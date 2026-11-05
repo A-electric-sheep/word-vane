@@ -21,7 +21,7 @@
 
 依赖
 ----
-`mcp` 为可选依赖：`pip install word2md[mcp]`。未安装时 `main()` 给出明确指引，
+`mcp` 为可选依赖：`pip install "word-vane[mcp]"`。未安装时 `main()` 给出明确指引，
 而不是抛 ImportError 堆栈。
 """
 from __future__ import annotations
@@ -206,9 +206,9 @@ def main(argv=None):
         mcp = build_server()
     except ImportError:
         print('未安装 MCP 依赖。请先执行:\n'
-              '    pip install "word2md[mcp]"\n'
+              '    pip install "word-vane[mcp]"\n'
               '然后再运行:\n'
-              '    python mcp_server.py',
+              '    word2md-mcp   (或 python mcp_server.py)',
               file=sys.stderr)
         return 2
     # 默认走 stdio，由 MCP 客户端负责拉起进程

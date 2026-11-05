@@ -55,8 +55,11 @@ GFM 管道表语法上**没有** `colspan`/`rowspan`。所以"docx → GFM"路�
 ## 安装
 
 ```bash
-pip install word2md
+pip install word-vane
 ```
+
+> 安装名是 **`word-vane`**，导入名与命令行仍是 `word2md`。
+> PyPI 上的 `word2md` 是**另一个项目**（hnrobert/word2md），与本项目无关，请勿混装。
 
 需要 Python 3.9 及以上。仅两个依赖：`python-docx`（解析 .docx）、`Pillow`（图片光栅化）。
 不依赖 Office / LibreOffice，无需联网，可离线部署。
@@ -93,7 +96,7 @@ word2md 你的文档.docx -o 输出目录 --verify
 | `word2md-batch` | 批量转换整个目录 |
 | `word2md-batch-verify` | 批量校验；支持 `--fail-under` |
 | `word2md-probe` | AI 可读性诊断（0–100 分 + 缺陷清单） |
-| `word2md-mcp` | 以 MCP server 方式提供能力（需 `pip install "word2md[mcp]"`） |
+| `word2md-mcp` | 以 MCP server 方式提供能力（需 `pip install "word-vane[mcp]"`） |
 
 也可直接运行脚本，无需安装：`python word2md.py 你的文档.docx -o 输出目录`
 
@@ -250,14 +253,14 @@ word2md-batch-verify docs/ --converted out/ --fail-under 99 || exit 1
 ```yaml
 - name: Convert and gate
   run: |
-    pip install word2md
+    pip install word-vane
     word2md manual.docx -o build/ --verify --fail-under 90
 ```
 
 ## MCP Server（给 Agent 用）
 
 ```bash
-pip install "word2md[mcp]"
+pip install "word-vane[mcp]"
 ```
 
 只暴露**一个**工具 `word2md_convert_and_verify`，一次调用完成转换 → 校验 → 评分。

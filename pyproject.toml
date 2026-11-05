@@ -3,7 +3,10 @@ requires = ["setuptools>=64", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "word2md"
+# 分发名用 word-vane（与仓库同名）。注意：PyPI 上的 `word2md` 已被他人占用
+# （hnrobert/word2md），本项目不能也不应使用该名字发布。
+# 安装名为 word-vane，导入名为 word2md，命令行入口仍为 word2md。
+name = "word-vane"
 dynamic = ["version"]
 description = "Word(.docx) 转 Markdown 转换器：合并单元格忠实还原，转换后强制一致性校验，仅依赖 python-docx 与 Pillow"
 readme = "README.md"
