@@ -42,6 +42,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# MCP server 依赖较重（含 pydantic / httpx 等），设为可选：
+#   仅用 CLI 的用户不需要它，装后才可用 word2md-mcp
+mcp = ["mcp>=1.0"]
 dev = [
     "pytest>=7.0",
     "ruff>=0.5",
@@ -54,6 +57,7 @@ word2md-verify = "verify_consistency:main"
 word2md-batch = "batch_convert:main"
 word2md-batch-verify = "batch_verify:main"
 word2md-probe = "review_probe:main"
+word2md-mcp = "mcp_server:main"
 
 [project.urls]
 Homepage = "https://github.com/A-electric-sheep/word-vane"
@@ -61,7 +65,7 @@ Repository = "https://github.com/A-electric-sheep/word-vane"
 Issues = "https://github.com/A-electric-sheep/word-vane/issues"
 
 [tool.setuptools]
-# 扁平布局：6 个模块平铺在仓库根目录，按模块名安装
+# 扁平布局：模块平铺在仓库根目录，按模块名安装
 py-modules = [
     "word2md",
     "math_latex",
@@ -69,6 +73,7 @@ py-modules = [
     "batch_convert",
     "batch_verify",
     "review_probe",
+    "mcp_server",
 ]
 
 [tool.setuptools.dynamic]

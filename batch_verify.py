@@ -27,13 +27,16 @@ def one(pair):
     return rec
 
 
-def main():
+def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument('root')
     ap.add_argument('--converted', required=True, help='Markdown 输出根目录(镜像原目录结构)')
     ap.add_argument('--workers', type=int, default=4)
     ap.add_argument('--json', default=None)
-    args = ap.parse_args()
+    ap.add_argument('--fail-under', type=float, default=None, metavar='PCT',
+                    help='任一份文档的表格或段落一致率低于该百分比即判定整体失败，'
+                         '以退出码 1 结束，供 CI / 质量门禁使用')
+    args = ap.parse_args(argv)
 
     root = os.path.abspath(args.root)
     conv_root = os.path.abspath(args.converted)
@@ -80,6 +83,29 @@ def main():
         json.dump(results, f, ensure_ascii=False, indent=2)
     print(f'结果已写入 {json_path}')
 
+    # 门禁判定: 两类失败都算不通过
+    #   1) verify 的 pass 为 False（有真实差异）
+    #   2) 一致率低于 --fail-under 指定阈值
+    if args.fail_under is not None:
+        below = []
+        for r in results:
+            par_pct = (r.get('paragraphs') or {}).get('pct')
+            tab_pct = (r.get('tables') or {}).get('pct')
+            for label, v in (('段落', par_pct), ('表格', tab_pct)):
+                if isinstance(v, (int, float)) and v < args.fail_under:
+                    below.append(f'{os.path.basename(r["docx"])} {label} {v}%')
+        nfailed = len(results) - npass
+        if nfailed or below:
+            print(f'\n[门禁] 未通过: {nfailed} 份 pass=False'
+                  + (f'，{len(below)} 项低于 {args.fail_under}%' if below else ''),
+                  file=sys.stderr)
+            for b in below[:20]:
+                print(f'  - {b}', file=sys.stderr)
+            return 1
+        print(f'\n[门禁] 通过: 全部 {len(results)} 份一致率 >= {args.fail_under}%',
+              file=sys.stderr)
+    return 0
+
 
 if __name__ == '__main__':
-    main()
+    raise SystemExit(main())

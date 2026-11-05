@@ -174,38 +174,38 @@ def readability(st, defects):
                         '可读性差, 建议重新转换')}
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument('docx')
-    ap.add_argument('md')
-    ap.add_argument('--sample', type=int, default=6)
-    args = ap.parse_args()
+def probe(docx_path, md_path, sample=6):
+    """对一份 docx/md 组合做完整探测，返回结果字典。
 
-    st = md_structure(args.md)
-    defects = detect_defects(st, os.path.dirname(args.md))
+    抽成函数而非留在 main 里，是为了让 MCP server 与质量门禁复用同一套口径，
+    避免"CLI 报 92 分、MCP 报 95 分"这类口径分裂。
+    """
+    st = md_structure(md_path)
+    defects = detect_defects(st, os.path.dirname(md_path))
     rd = readability(st, defects)
 
-    wpar, wtabs = word_parse(args.docx)
-    mpar, mtabs = md_parse(args.md)
+    wpar, wtabs = word_parse(docx_path)
+    mpar, mtabs = md_parse(md_path)
 
     # 对位抽样: 取 Word 段落流的等间距样本, 输出两侧内容便于比对
     samples = []
     n = len(wpar)
-    if n:
-        step = max(1, n // args.sample)
+    if n and sample > 0:
+        step = max(1, n // sample)
         for k in range(0, n, step):
-            if len(samples) >= args.sample:
+            if len(samples) >= sample:
                 break
             wv = wpar[k]
             mv = mpar[k] if k < len(mpar) else '<缺>'
             samples.append({'index': k, 'match': wv == mv,
                             'word': wv[:160], 'md': mv[:160]})
 
-    out = {
-        'docx': args.docx,
-        'md': args.md,
-        'md_path_rel': args.md,
-        'structure': {k: v for k, v in st.items() if k not in ('text', 'lines_list', 'heads', 'imgs')},
+    return {
+        'docx': docx_path,
+        'md': md_path,
+        'md_path_rel': md_path,
+        'structure': {k: v for k, v in st.items()
+                      if k not in ('text', 'lines_list', 'heads', 'imgs')},
         'headings_preview': st['heads'][:15],
         'defects': defects,
         'readability': rd,
@@ -219,8 +219,31 @@ def main():
         },
         'samples': samples,
     }
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(
+        description='AI 可读性诊断：输出结构指标、缺陷清单与 0-100 评分')
+    ap.add_argument('docx')
+    ap.add_argument('md')
+    ap.add_argument('--sample', type=int, default=6)
+    ap.add_argument('--fail-under', type=float, default=None, metavar='SCORE',
+                    help='可读性分数低于该阈值时以退出码 1 结束，供 CI / 质量门禁使用')
+    args = ap.parse_args(argv)
+
+    out = probe(args.docx, args.md, sample=args.sample)
     print(json.dumps(out, ensure_ascii=False, indent=1))
+
+    if args.fail_under is not None:
+        score = out['readability']['score']
+        if score < args.fail_under:
+            print(f'\n[门禁] 可读性 {score} 分 < 阈值 {args.fail_under} 分，判定不通过',
+                  file=sys.stderr)
+            return 1
+        print(f'\n[门禁] 可读性 {score} 分 >= 阈值 {args.fail_under} 分，通过',
+              file=sys.stderr)
+    return 0
 
 
 if __name__ == '__main__':
-    main()
+    raise SystemExit(main())

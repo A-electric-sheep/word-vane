@@ -1410,6 +1410,12 @@ def main(argv=None):
     ap.add_argument('--no-toc', action='store_true', help='关闭目录域处理')
     ap.add_argument('--no-bold', action='store_true', help='剥离加粗/粗斜体强调语法(为 AI 阅读降噪, 文本内容与 sub/sup/br 功能标签保留)')
     ap.add_argument('--code-lang', default='c', help='代码块语言标记(默认 c)')
+    ap.add_argument('--verify', action='store_true',
+                    help='转换后立即做内容级一致性校验；不一致时退出码为 1')
+    ap.add_argument('--fail-under', type=float, default=None, metavar='SCORE',
+                    help='配合 --verify：AI 可读性分数低于该阈值时退出码为 1')
+    ap.add_argument('--probe', action='store_true',
+                    help='配合 --verify：额外输出 AI 可读性诊断摘要')
     args = ap.parse_args(argv)
 
     stats = convert_word_to_markdown(
@@ -1426,6 +1432,43 @@ def main(argv=None):
           f" | 目录条目 {stats['toc_entries']}")
     for w in stats['warnings']:
         print(f"  ⚠ {w}")
+
+    if not (args.verify or args.fail_under is not None or args.probe):
+        return 0
+
+    # ---- 一步式校验: 转换完立刻证明没丢东西 ----
+    # 延迟导入: 让"只想转换"的用户不承担 verify/probe 的模块加载开销
+    from verify_consistency import verify
+
+    report = verify(args.input, stats['md_path'])
+    par = report['paragraphs']
+    tab = report['tables']
+    fml = report['formulas']
+    print()
+    print(f"【校验】段落 {par['pct']}% ({par['matched']}/{par['word_n']})"
+          f" | 表格 {tab['pct']}% (单元格 {tab['cell_matched']}/{tab['cell_total']})"
+          f" | 公式 {fml['word']}/{fml['md']}"
+          f" | 图片缺失 {len(report['images'].get('missing') or [])}")
+    print(f"【判定】{'通过 ✓' if report['pass'] else '存在差异 ✗'}")
+
+    problems = []
+    if not report['pass']:
+        problems.append('内容级校验未通过')
+
+    score = None
+    if args.probe or args.fail_under is not None:
+        from review_probe import probe
+        pr = probe(args.input, stats['md_path'], sample=0)
+        score = pr['readability']['score']
+        print(f"【可读性】{score} 分 / {pr['readability']['grade']} 级"
+              f"，缺陷 {len(pr['defects'])} 项")
+
+    if args.fail_under is not None and score is not None and score < args.fail_under:
+        problems.append(f'可读性 {score} < 阈值 {args.fail_under}')
+
+    if problems:
+        print('【门禁】' + '；'.join(problems), file=sys.stderr)
+        return 1
     return 0
 
 
