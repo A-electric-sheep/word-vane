@@ -41,6 +41,24 @@ def norm(s):
     return t
 
 
+def split_gfm_row(row):
+    """按 GFM 规范切分管道行, 转义竖线 `\\|` 不作为列分隔符。
+
+    直接 `row.strip('|').split('|')` 会把单元格内的 `\\|`(转换器对内容中
+    字面竖线的正确转义, 如 C 代码 `REG_A1 \\|= 0x20`)当成分隔符, 导致该行
+    多切出一格、整表比对失败——这是校验侧的伪差异来源。
+    """
+    body = row.strip()
+    if body.startswith('|'):
+        body = body[1:]
+    # 结尾的 '|' 是行闭合符; 但 '\\|' 是转义竖线, 属于内容, 不能剥
+    if body.endswith('|') and not body.endswith('\\|'):
+        body = body[:-1]
+    parts = re.split(r'(?<!\\)\|', body)
+    return [p.replace('\\|', '|') for p in parts]
+
+
+
 # ---------- Word 侧 ----------
 def word_w_text(ch):
     """提取 w:t 文本, 跳过 ruby 注音 rt 与隐藏 run(webHidden) 的文本——与转换器口径一致"""
@@ -415,7 +433,7 @@ def md_parse(md_path, return_alt=False):
                 i += 1
             cells = []
             for r in rows:
-                cs = [c.strip() for c in r.strip('|').split('|')]
+                cs = [c.strip() for c in split_gfm_row(r)]
                 # 分隔符行必须是 --- 等 3+ 连字符(转换器生成格式); 单个 '-' 是
                 # 位号表"保留位"数据格, 不能当分隔行丢弃
                 if all(re.match(r'^:?-{3,}:?$', c) for c in cs):

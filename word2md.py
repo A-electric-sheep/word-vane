@@ -73,18 +73,107 @@ DEFAULT_TOC_STYLES = {'toc 1': 1, 'toc 2': 2, 'toc 3': 3, 'toc 4': 4, 'toc 5': 1
 
 CODE_PREFIXES = ('#include', '#define', 'unsigned', 'void ', 'static', 'typedef',
                  'int ', 'char ', 'long ', 'short ', 'float ', '/*', '//')
+# 左值: 标识符 + 可选的 .成员/->成员 与 [下标] 后缀。
+# 下标两侧允许空格 —— 规格书代码里 "REG_X [i]= *( POINT+i);" 这类写法
+# 极常见(实测 10 份文档), 旧式 [\w$\[\]\.\->]* 要求 "[" 紧贴标识符, 会漏判。
+RE_CODE_LVALUE = r"[A-Za-z_$][\w$\.\->]*(?:\s*\[\s*[^\]\s]*\s*\])*[\w$\.\->]*"
 RE_CODE_ASSIGN = re.compile(
-    r"^[A-Za-z_$][\w$\[\]\.\->]*\s*"
+    r"^" + RE_CODE_LVALUE + r"\s*"
     r"(?:<<=|>>=|\|=|&=|\+=|-=|\*=|/=|%=|\^=|=(?!=))\s*"
     r"[0-9A-Za-z_x$'\s\.\*\+\-\/\%\|&\[\]\(\)~<>!]+"
     r"(?:\s*;\s*(?://.*)?)?$"
 )
 RE_CODE_CTRL = re.compile(r'^(?:\b(?:for|if|while|switch)\s*\(.*|\breturn\b.*|[\{\}])$')
-# 函数调用语句: 纯 ASCII 标识符 + 括号参数 + 分号收尾, 如 ``printf("%d", n);``
-# 限定"纯 ASCII 且无中文"是为了不误伤正文里的「详见附录A(第5页);」这类句子。
-RE_CODE_CALL = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*\s*\([^;]*\)\s*;$')
-# 中日韩统一表意文字：用于把"含中文的行"排除出代码判定
-_RE_CJK = re.compile(r'[\u4e00-\u9fff\u3400-\u4dbf]')
+
+# 函数调用语句: 标识符(可带 . -> 成员) + 括号实参 + 分号收尾。
+# 必须要求 ";" —— 这是与规格书正文的关键区分线:
+#   代码      "_nop_();"、"I2C_START();"、"I2C_WRITE(addr);"  → 命中
+#   正文说明  "REG_A1 (CBH)"、"SOP16L(150mil)"、"REG_B (F0H)"
+#             "PWMn周期寄存器高8位(读/写)"  → 全部不命中(无分号)
+# 实测 73 份规格书: 正文中形如 "标识符(参数)" 的段落 16 种, 其中仅 _nop_() 系列
+# 共 95 次是真代码; 其余为寄存器/封装说明, 去掉分号要求会把它们误包进代码块。
+RE_CODE_CALL = re.compile(
+    r"^[A-Za-z_]\w*(?:\s*(?:\.|->)\s*[A-Za-z_]\w*)*\s*"
+    r"\([^()]*\)\s*;\s*(?://.*)?$"
+)
+
+# 自增/自减语句: "counter++;"、"++i;"、"a[0]--;"。
+# 这类行既不是赋值(无 =)也不是函数调用(无括号), 旧版三者全不匹配,
+# 会把含自增的循环体从中间劈开。
+RE_CODE_INCDEC = re.compile(
+    r"^(?:(?:" + RE_CODE_LVALUE + r"\s*(?:\+\+|--))"
+    r"|(?:(?:\+\+|--)\s*" + RE_CODE_LVALUE + r"))\s*;\s*(?://.*)?$"
+)
+
+# 数学关系式排除: 形如 "duty1 = duty0"、"Baud = clock/(((SEG1+2)+(SEG2+1)))"。
+# 特征: 等号右侧不含数字/十六进制/函数调用/分号, 且整体是纯标识符算式 ——
+# 规格书用它表达"两量相等"的推导结论, 包进 ```c 会被误读成可执行赋值。
+RE_MATH_RELATION = re.compile(r"^\s*[A-Za-z_]\w*(?:\s*[\*\+\-/]\s*[A-Za-z_]\w*)*\s*$")
+
+# ---------------- 8051 汇编识别 ----------------
+# 规格书里的「汇编例程」与「指令说明」形状相近, 必须区分:
+#   汇编代码  "MOV R1,#83H\t; 将 REG_A1 的地址写入 R1"   → 入块
+#   指令说明  "MOV  A, #50H    （这条指令是将立即数50H送到累加器A中）" → 不入块
+#             "INC  R0      是指（R0）+1→R0"
+# 判据优先级:
+#   1. 含分号 → 代码(汇编注释一律以 ; 起头)
+#   2. 含全角括号 / 大间距后半角括号 → 说明文字
+#   3. 逐个校验操作数是否合法 8051 操作数形态 → 合法才算代码
+ASM_MNEMONICS = frozenset({
+    'NOP', 'MOV', 'MOVC', 'MOVX', 'ORL', 'ANL', 'XRL', 'INC', 'DEC', 'CLR', 'CPL',
+    'SETB', 'ADD', 'ADDC', 'SUBB', 'MUL', 'DIV', 'JMP', 'SJMP', 'LJMP', 'AJMP',
+    'CALL', 'LCALL', 'ACALL', 'DJNZ', 'CJNE', 'JZ', 'JNZ', 'JC', 'JNC', 'JB',
+    'JNB', 'JBC', 'PUSH', 'POP', 'RET', 'RETI', 'XCH', 'XCHD', 'DA', 'SWAP',
+    'RL', 'RR', 'RLC', 'RRC'})
+
+# 合法 8051 操作数: 寄存器/立即数/直接地址/@间接/位地址/标号/偏移表达式
+RE_ASM_OPERAND = re.compile(
+    r'^(?:'
+    r'[ARCDPB]+\d*'                                  # A, R0-R7, C, DPTR
+    r'|@(?:R[01]|A\+DPTR|DPTR)'                      # @R0 @R1 @A+DPTR @DPTR
+    r'|#[\w$]+'                                      # #50H #83H #0x01
+    r'|[A-Za-z_$][\w$]*(?:\s*[+\-]\s*[\w$]+)*'       # 标号 / 偏移表达式
+    r'|[\w$]+[Hh]?'                                  # 50H / 直接地址
+    r'|/[\w]+'                                       # 位取反 /bit
+    r')$')
+
+
+def _looks_like_asm(t: str) -> bool:
+    """判断是否为 8051 汇编代码行（区别于「指令说明」文字）。"""
+    s = t.strip()
+    if not s:
+        return False
+    # 规格书里偶用全角美元符号表示当前地址, 归一化后再解析
+    s = s.replace('\uff04', '$')
+    # 先剥离注释再取助记符: "NOP; 至少需要12个NOP指令" 的助记符是 NOP 而非 "NOP;"
+    has_comment = ';' in s
+    code_part = s.split(';', 1)[0].strip() if has_comment else s
+    # 纯注释行("; xxx"): 剥完为空, 无从取助记符。规格书里这种行紧贴代码块,
+    # 判为代码可让它留在块内; 但正文也可能有分号起头的说明, 保守起见判 False。
+    if not code_part:
+        return False
+    parts = code_part.split(None, 1)
+    head = parts[0]
+    # 助记符必须全大写: 排除 "Push the PC value onto the Stack" 这类英文说明
+    if head != head.upper() or head not in ASM_MNEMONICS:
+        return False
+    rest = parts[1].strip() if len(parts) > 1 else ''
+    # 1. 汇编注释以 ';' 起头, 有分号即代码
+    if has_comment:
+        return True
+    # 2. 无操作数的纯指令: 仅 NOP 无歧义; 其余助记符缺操作数多为说明文字
+    if not rest:
+        return head == 'NOP'
+    # 3. 说明文字特征: 全角括号, 或操作数后大间距接半角括号
+    if re.search(r'[（]', rest):
+        return False
+    if re.search(r'\s{2,}[\(\[]', rest):
+        return False
+    # 4. 逐个校验操作数合法性（最多两个）
+    ops = [o.strip() for o in rest.split(',')]
+    if len(ops) > 2:
+        return False
+    return all(o and RE_ASM_OPERAND.match(o) for o in ops)
 
 
 def _looks_like_code(t: str) -> bool:
@@ -99,9 +188,24 @@ def _looks_like_code(t: str) -> bool:
     for p in CODE_PREFIXES:
         if t.startswith(p):
             return True
-    # 函数调用语句(纯 ASCII): 见 RE_CODE_CALL 注释
-    if _RE_CJK.search(t) is None and RE_CODE_CALL.match(t):
+    # 函数调用语句(以分号收尾): _nop_(); I2C_START(); I2C_WRITE(addr);
+    # 这类行旧版完全漏判, 会把一个连续代码块从中间劈开(实测某份规格书
+    # 的 _nop_() x12 与寄存器循环体被甩到围栏外)。
+    if RE_CODE_CALL.match(t):
         return True
+    # 自增/自减语句: counter++; ++i; a[0]--;
+    if RE_CODE_INCDEC.match(t):
+        return True
+    # 8051 汇编: MOV R1,#83H / NOP / ORL PCON,#02H
+    # 「汇编例程」在 29 份规格书中出现, 这些行若不入块会散成独立段落。
+    if _looks_like_asm(t):
+        return True
+    # 纯标识符关系式(无分号): "duty1 = duty0" —— 规格书用它表达推导结论,
+    # 不是可执行赋值, 必须在下面的分号判定前拦掉。
+    if '=' in t and not re.search(r';\s*(?://.*)?$', t.rstrip()):
+        rhs = t.split('=', 1)[1]
+        if RE_MATH_RELATION.match(rhs):
+            return False
     if not (RE_CODE_ASSIGN.match(t) or RE_CODE_CTRL.match(t)):
         return False
     # 排除"数学关系式"被误判为 C 赋值语句: 形如
@@ -147,7 +251,7 @@ class Converter:
         if heading_styles:
             self.heading_level.update(heading_styles)
         # 样式名大小写不敏感索引: Word 文档中 SOC1-1 / soc1-1 混用极常见,
-        # 且部分文档 SOC1 为分页空段落、SOC1-1 才是一级标题(实测多份规格书均为该形态),
+        # 且部分型号 SOC1 为分页空段落、SOC1-1 才是一级标题(实测多份规格书均为该形态),
         # 故统一用小写键查找, 空标题段落由调用处跳过。
         self._heading_ci = {k.strip().lower(): v for k, v in self.heading_level.items()}
         self.toc_level = dict(DEFAULT_TOC_STYLES)
@@ -292,7 +396,6 @@ class Converter:
         """判断文本是否像"小标题"而非正文/条目/图注。
 
         用于区分 SOC2tex(小标题) 与 SOC1tex(正文段或图注)、soc2cir(条目)。
-        (以上为样式族命名示例, 非任何具体产品标识)
         小标题特征: 短、不以标点收尾、无句号式陈述。
         """
         t = (text or '').strip()
@@ -368,7 +471,7 @@ class Converter:
           1) 样式名命中映射表(大小写不敏感) —— 高置信, 直接采用
           2) 段落/样式自身的 w:outlineLvl —— 兜底, 但需通过合理性校验
         注意:
-          - **不使用 basedOn 继承链**。实测此类正文样式 basedOn 为
+          - **不使用 basedOn 继承链**。实测 SOC2tex 等正文样式 basedOn 为
             "Heading 5", 但语义上只是三级小标题, 按继承链会误判大量段落为 h5。
           - outlineLvl 兜底限 1~4 级且排除"寄存器名/位域名"式文本。Word 里
             寄存器小节标题常被设 outlineLvl=5, 强行提升会产出 100+ 个 h5/h6
@@ -545,13 +648,67 @@ class Converter:
             txt = '*' + txt + '*'
         return txt
 
-    def rich_runs(self, el):
+    @staticmethod
+    def _run_inline_text(r_el):
+        """按 XML 顺序重建 run 的内联文本, 保留 w:tab / w:br / w:noBreakHyphen。
+
+        只收集 w:t 会整体丢弃 run 内的制表符与软回车(缺陷 D1):
+          - C 代码 "int\\ta = 1;" -> "inta = 1;"(标识符被篡改)
+          - 汇编 "MOV A,#50H\\t; 注释" -> "MOV A,#50H; 注释"(注释符粘连)
+          - 正文 "字段A\\t字段B" -> 列分隔丢失, 文本粘连
+        这三类都是静默错误: 内容看起来完整, 但语义已变。
+        """
+        out = []
+        for ch in r_el:
+            tag = ch.tag
+            if tag == qn('w:t'):
+                out.append(ch.text or '')
+            elif tag == qn('w:tab'):
+                out.append('\t')
+            elif tag == qn('w:cr'):
+                out.append('\n')
+            elif tag == qn('w:br'):
+                # 仅文本环绕型换行产生软回车; 分页/分栏符不产生可见字符
+                if ch.get(qn('w:type')) in (None, 'textWrapping'):
+                    out.append('\n')
+            elif tag == qn('w:noBreakHyphen'):
+                out.append('-')
+        return ''.join(out)
+
+    @staticmethod
+    def _to_prose_inline(s):
+        """把内联文本转为正文形态。
+
+        制表符 -> 单空格: 保留列间分隔, 同时避免行首 tab 被 Markdown
+        解析成缩进代码块(4 空格/制表符起始即代码块), 破坏段落边界。
+        软回车 -> <br>: 保留 Word 内的手工换行。
+
+        首尾的软回车要丢弃: 段落仅由一个 w:br 构成的空段落(排版留白)
+        若转成 <br> 会产出孤立空行, 是纯噪声; 且这类段落本应走空段落分支。
+        """
+        s = s.replace('\t', ' ')
+        s = s.strip(' \r\n\t')
+        # 去掉首尾残留的 <br>(可能由连续的 w:br 产生)
+        while True:
+            t = re.sub(r'^(?:<br>\s*)+', '', s)
+            t = re.sub(r'(?:\s*<br>)+$', '', t)
+            if t == s:
+                break
+            s = t
+        return s.replace('\n', '<br>')
+
+    def rich_runs(self, el, plain=False):
         """渲染段落内联内容。
 
         内部先收集 [(kind, payload, bold, italic, script)] 片段, 末尾把**相邻且
         格式完全相同**的文本片段合并后再统一包裹强调语法。Word 把一个视觉连续的
         加粗短语拆成多个 run 时(中文规格书极常见), 逐 run 包裹会产出大量
         `****` 接缝(实测单文档可达 1500+ 处), 严重干扰 AI 阅读与检索。
+
+        plain=True 时输出纯文本: 不加 ** 强调、不生成 <sub>/<sup> 标签,
+        供代码块使用。代码块内的 `*` 是 C 指针/解引用符, 用正则事后剔除
+        会把 "unsigned char code * POINT" 误伤成 "unsigned char code  POINT"
+        (语义破坏), 故必须在片段层面就抑制标记生成, 而非事后清洗。
         """
         segs = []   # ('text', str, b, i, v) 或 ('raw', str)
 
@@ -561,10 +718,11 @@ class Converter:
             # 上下标先就地内联成标签, 使合并键只含 (bold, italic) ——
             # 否则 "<sub>SYS</sub>" 与前后同粗体文本因 vertAlign 不同而无法合并,
             # 残留 "**f****<sub>SYS</sub>****）：**" 这类接缝
-            if v == 'subscript':
-                txt = '<sub>' + txt + '</sub>'
-            elif v == 'superscript':
-                txt = '<sup>' + txt + '</sup>'
+            if not plain:
+                if v == 'subscript':
+                    txt = '<sub>' + txt + '</sub>'
+                elif v == 'superscript':
+                    txt = '<sup>' + txt + '</sup>'
             if segs and segs[-1][0] == 'text':
                 _, prev, pb, pi_ = segs[-1]
                 if (pb, pi_) == (b, i):
@@ -592,7 +750,7 @@ class Converter:
                             txt = ''.join(t.text or '' for t in rb.findall('.//' + qn('w:t')))
                             add_text(txt, b, i, v)
                         continue
-                    txt = ''.join(t.text or '' for t in child.findall(qn('w:t')))
+                    txt = self._run_inline_text(child)
                     add_text(txt, b, i, v)
                 elif tag == qn('w:hyperlink'):
                     anchor = child.get(qn('w:anchor'))
@@ -604,10 +762,11 @@ class Converter:
                     def add_inner(txt, b, i, v):
                         if not txt:
                             return
-                        if v == 'subscript':
-                            txt = '<sub>' + txt + '</sub>'
-                        elif v == 'superscript':
-                            txt = '<sup>' + txt + '</sup>'
+                        if not plain:
+                            if v == 'subscript':
+                                txt = '<sub>' + txt + '</sub>'
+                            elif v == 'superscript':
+                                txt = '<sup>' + txt + '</sup>'
                         if inner_segs and inner_segs[-1][0] == 'text':
                             _, prev, pb, pi_ = inner_segs[-1]
                             if (pb, pi_) == (b, i):
@@ -621,8 +780,12 @@ class Converter:
                         if hidden:
                             continue
                         b, i, v = self._run_fmt(r)
-                        t = ''.join(x.text or '' for x in r.findall(qn('w:t')))
+                        t = self._run_inline_text(r)
                         add_inner(t, b, i, v)
+                    # plain 模式只取纯文本标签, 不生成链接语法(代码块内不适用)
+                    if plain:
+                        add_raw(''.join(s[1] for s in inner_segs if s[0] == 'text'))
+                        continue
                     label = ''.join(self._wrap(s[1], s[2], s[3], None)
                                     for s in inner_segs if s[0] == 'text')
                     if anchor and anchor in self.anchor2slug:
@@ -653,10 +816,14 @@ class Converter:
                     continue
                 elif tag == qn('m:oMathPara'):
                     add_raw('$$' + omml2latex(child) + '$$')
-                    self.formula_blocks += 1
+                    # plain 通道仅用于取代码块文本, 不计入公式统计, 否则
+                    # 同一段落被渲染两次会导致统计翻倍
+                    if not plain:
+                        self.formula_blocks += 1
                 elif tag == qn('m:oMath'):
                     add_raw('$' + omml2latex(child) + '$')
-                    self.formula_blocks += 1
+                    if not plain:
+                        self.formula_blocks += 1
                 else:
                     walk(child)
 
@@ -667,7 +834,13 @@ class Converter:
                 out.append(seg[1])
             else:
                 _, txt, b, i = seg
-                out.append(self._wrap(txt, b, i, None))
+                # plain(代码块) 模式: 不包 ** 强调, 保留文本里字面的 * 与 _
+                if plain:
+                    out.append(txt)
+                else:
+                    out.append(self._wrap(txt, b, i, None))
+        if plain:
+            return ''.join(out)
         return self._seal_emphasis(''.join(out))
 
     def _seal_emphasis(self, s):
@@ -811,10 +984,15 @@ class Converter:
                         return txt
                     return ('<strong>' + txt + '</strong>') if b else txt
             return ''
-        txt = ''.join(t.text or '' for t in r_el.findall(qn('w:t')))
+        txt = self._run_inline_text(r_el)
         if not txt:
             return ''
+        # run 内可能含制表符/软回车: 表格单元格内制表符作空格(HTML 会折叠
+        # 连续空白), 软回车转 <br> 以保留手工换行。
+        # 转义必须在插入 <br> 之前完成, 否则自家标签会被转义成实体。
+        txt = txt.replace('\t', ' ')
         txt = txt.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+        txt = txt.replace('\n', '<br>')
         if va == 'subscript':
             txt = '<sub>' + txt + '</sub>'
         elif va == 'superscript':
@@ -832,6 +1010,23 @@ class Converter:
         return txt
 
     def _para_run_inherit(self, p_el):
+        """取段落级默认文字格式。
+
+        **只继承 vertAlign(上下标), 不继承 b/i/strike。**
+
+        原因: OOXML 里 pPr/rPr 描述的是「段落标记」(pilcrow ¶)自身的格式,
+        不是段落内文字的格式。Word 里改「段落标记」字体时只影响那个看不见的
+        回车符, 不影响文字显示。
+
+        实测某份规格书: 表43 的 REG_C 单元格 pPr/rPr 带 <w:strike/>, 但
+        run 自身无 strike, 同表的其它单元格也无此标记 —— 三者在 Word 中
+        显示完全一致(都没删除线)。旧版把它当文字格式继承, 于是输出
+        <s>REG_C</s>, 凭空多出删除线。同类误伤: 全库 37 处 <strong> + 14 处
+        <s> 是段落标记污染, 与实际可见格式不符。
+
+        vertAlign 保留继承: 部分文档把整段设为上下标时只写在 pPr/rPr 里,
+        且该属性针对文字本身, 无 pilcrow 语义歧义。
+        """
         pPr = p_el.find(qn('w:pPr'))
         if pPr is None:
             return {}
@@ -839,10 +1034,6 @@ class Converter:
         if mPr is None:
             return {}
         inherit = {}
-        for tag, key in ((qn('w:b'), 'b'), (qn('w:i'), 'i'), (qn('w:strike'), 's')):
-            e = mPr.find(tag)
-            if e is not None:
-                inherit[key] = e.get(qn('w:val')) not in ('0', 'false', 'none')
         vv = mPr.find(qn('w:vertAlign'))
         if vv is not None:
             inherit['va'] = vv.get(qn('w:val'))
@@ -1155,7 +1346,16 @@ class Converter:
         def flush_code():
             nonlocal code_buf
             if len(code_buf) >= 1:
-                lines.append('```' + self.code_lang)
+                # 语言标记按块内容判定: 块内过半行为汇编指令则标 asm,
+                # 否则用用户指定值(默认 c)。C 代码块里混一两行汇编注释时
+                # 仍应标 c, 故用「过半」而非「任一」。
+                lang = self.code_lang
+                body = [c for c in code_buf if c.strip()]
+                if body:
+                    n_asm = sum(1 for c in body if _looks_like_asm(c))
+                    if n_asm * 2 >= len(body):
+                        lang = 'asm'
+                lines.append('```' + lang)
                 for c in code_buf:
                     lines.append(c)
                 lines.append('```')
@@ -1169,7 +1369,15 @@ class Converter:
                 p_el = blk._p
                 style = self._style_name_of(p_el)   # 走缓存, 避免全表遍历
                 pure = ''.join(t.text or '' for t in p_el.findall('.//' + qn('w:t'))).strip()
-                txt = self.rich_runs(p_el).strip()
+                # 内联原文(保留 \t 与 \n)与正文形态(制表符->空格, 软回车-><br>)
+                # 必须分开: 代码块内制表符是有意义的缩进/对齐, 转空格会破坏
+                # 对齐; 而正文里的裸制表符行首会被 Markdown 当作缩进代码块。
+                txt_raw = self.rich_runs(p_el)
+                # 代码块走纯文本模式: 不生成 ** 强调与 <sub>/<sup> 标签。
+                # 不可用正则事后剔除星号 —— C 的指针/解引用符 "*" 会被误删,
+                # "unsigned char code * POINT" 会变成 "unsigned char code  POINT"
+                code_txt = self.rich_runs(p_el, plain=True).strip('\r\n')
+                txt = self._to_prose_inline(txt_raw)
                 imgs = self._para_imagedata(p_el)
                 # 上一块是图片、本块是短文本 -> 这是图片说明文字(图注),
                 # 不应当作章节标题; 记入供标题判定排除
@@ -1281,10 +1489,9 @@ class Converter:
                     if pending_blank:
                         code_buf.append('')
                         pending_blank = False
-                    # 代码块保留行首缩进: txt 已被 strip(), 直接用会把
-                    # ``    int n = 0;`` 压成 ``int n = 0;``, 丢失代码层级。
-                    # 取 rich_runs 原始输出并仅去掉行尾空白。
-                    code_buf.append(self.rich_runs(p_el).rstrip())
+                    # 代码块内保留原始制表符: 它是缩进与注释对齐的语义载体,
+                    # 转空格会改变列位置(缺陷 D1 的代码侧表现)
+                    code_buf.append(code_txt)
                     continue
                 else:
                     pending_blank = False
@@ -1375,14 +1582,12 @@ def convert_word_to_markdown(src_path, out_dir=None, **kwargs) -> dict:
         raise FileNotFoundError(
             f'找不到文件: {src_path}\n'
             f'请检查路径是否正确(当前目录: {os.getcwd()})')
-    # 旧版 .doc 是 OLE 二进制, python-docx 无法读取。必须在这里拦下并给出
-    # 可操作指引; 否则会直接抛底层 PackageNotFoundError, 用户无从判断原因。
-    # 注意: 早期版本把 '.doc' 一并写进了"允许"元组, 导致本分支永不可达。
-    if src_path.lower().endswith('.doc'):
-        raise ValueError(
-            '旧版 .doc 二进制格式不被本工具直接支持。请先用 Word/WPS 另存为 .docx, '
-            '或使用 LibreOffice: soffice --headless --convert-to docx 输入.doc')
-    if not src_path.lower().endswith('.docx'):
+    if not src_path.lower().endswith(('.docx', '.doc')):
+        # .doc 需先转 docx, 给出明确提示
+        if src_path.lower().endswith('.doc'):
+            raise ValueError(
+                '旧版 .doc 二进制格式不被本工具直接支持。请先用 Word/WPS 另存为 .docx, '
+                '或使用 LibreOffice: soffice --headless --convert-to docx 输入.doc')
         raise ValueError(f'不支持的输入格式: {src_path}, 仅支持 .docx')
 
     conv = Converter(src_path,

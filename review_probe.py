@@ -17,7 +17,16 @@ import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from verify_consistency import md_parse, word_parse  # noqa: E402
+from verify_consistency import md_parse, split_gfm_row, word_parse  # noqa: E402
+
+
+def _gfm_col_count(row):
+    """GFM 行实际列数: 转义竖线 `\\|` 属单元格内容, 不计数。
+
+    直接 `row.strip('|').count('|')+1` 会把内容中的字面竖线(如 C 代码
+    `REG_A1 \\|= 0x20`)算成列分隔, 误报表格列数不齐。
+    """
+    return len(split_gfm_row(row))
 
 
 def md_structure(md_path):
@@ -41,7 +50,7 @@ def md_structure(md_path):
             while i < len(lines) and lines[i].strip().startswith('|'):
                 rows.append(lines[i].strip())
                 i += 1
-            widths = {r.strip('|').count('|') + 1 for r in rows}
+            widths = {_gfm_col_count(r) for r in rows}
             if len(widths) > 1:
                 bad_tables.append({'table_index': tidx, 'col_counts': sorted(widths),
                                    'first_row': rows[0][:80]})
