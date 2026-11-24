@@ -1582,12 +1582,15 @@ def convert_word_to_markdown(src_path, out_dir=None, **kwargs) -> dict:
         raise FileNotFoundError(
             f'找不到文件: {src_path}\n'
             f'请检查路径是否正确(当前目录: {os.getcwd()})')
-    if not src_path.lower().endswith(('.docx', '.doc')):
-        # .doc 需先转 docx, 给出明确提示
-        if src_path.lower().endswith('.doc'):
-            raise ValueError(
-                '旧版 .doc 二进制格式不被本工具直接支持。请先用 Word/WPS 另存为 .docx, '
-                '或使用 LibreOffice: soffice --headless --convert-to docx 输入.doc')
+    # 旧版 .doc 是 OLE 二进制, python-docx 无法读取。必须在这里拦下并给出
+    # 可操作指引; 否则会直接抛底层 PackageNotFoundError, 用户无从判断原因。
+    # 注意: 不要写成 endswith(('.docx', '.doc')) 再在内层判断 —— 那样外层条件
+    # 对 .doc 恒为 False, 内层提示永不可达, 会退化为底层异常。
+    if src_path.lower().endswith('.doc'):
+        raise ValueError(
+            '旧版 .doc 二进制格式不被本工具直接支持。请先用 Word/WPS 另存为 .docx, '
+            '或使用 LibreOffice: soffice --headless --convert-to docx 输入.doc')
+    if not src_path.lower().endswith('.docx'):
         raise ValueError(f'不支持的输入格式: {src_path}, 仅支持 .docx')
 
     conv = Converter(src_path,
