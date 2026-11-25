@@ -3,7 +3,7 @@
 为**样式重度的技术文档**做的 Word→Markdown 转换器：合并单元格忠实还原、转换后逐段逐格校验、
 只依赖两个 Python 包（不装 Pandoc、不下模型、不联网）。
 
-**版本**：1.0.0
+**版本**：1.0.0（开发中，尚未发布到 PyPI）　·　变更记录见 [CHANGELOG.md](CHANGELOG.md)
 
 ## 它解决什么、不解决什么
 
@@ -445,6 +445,7 @@ print(report['pass'])
 | `pyproject.toml` | 打包与工具链配置（ruff / pytest） | 是 |
 | `requirements.txt` | 依赖清单（等价于 pyproject 的 dependencies） | 可选 |
 | `REVIEW_SPEC.md` | 复核规程（供 AI 子代理遵循） | 可选 |
+| `CHANGELOG.md` | 变更日志（含已知限制与版本号来源说明） | 是 |
 | `tests/` | pytest 测试（夹具运行时生成，仓库不含 .docx） | 开发 |
 | `bench/` | 合并单元格保真度基准（可复现对照） | 可选 |
 
@@ -455,7 +456,7 @@ print(report['pass'])
 ```bash
 pip install -e ".[dev]"
 
-pytest                                # 78 项测试
+pytest                                # 84 条用例（70 个测试函数，参数化展开）
 ruff check .                          # 风格检查
 python bench/merged_cells_bench.py    # 合并单元格基准
 ```

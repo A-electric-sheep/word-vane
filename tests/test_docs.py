@@ -145,3 +145,66 @@ def test_readme_install_command_matches_package_name():
                    'firecrawl-anydoc', 'docx2md'}
     wrong = {i for i in flat if i not in third_party and i != pkg}
     assert not wrong, f'README 出现了非本包的安装名: {wrong}（本包应为 {pkg}）'
+
+
+# ---------------------------------------------------------------- CHANGELOG
+CHANGELOG = REPO / 'CHANGELOG.md'
+
+
+def _changelog_text():
+    return CHANGELOG.read_text(encoding='utf-8')
+
+
+def test_changelog_exists():
+    """CHANGELOG 是发布前的最低要求，缺失即失败。"""
+    assert CHANGELOG.is_file(), '缺少 CHANGELOG.md'
+
+
+def test_changelog_version_matches_source():
+    """CHANGELOG 里的版本号必须与 word2md.__version__ 一致。
+
+    这条防的是「改了版本号却忘了更新日志」——发布时最难查的一类不一致。
+    """
+    import word2md
+    text = _changelog_text()
+    # 取第一个二级标题里的版本号，如 "## [1.0.0] — 未发布"
+    m = re.search(r'^##\s*\[([0-9]+\.[0-9]+\.[0-9]+)\]', text, re.M)
+    assert m, 'CHANGELOG 未见形如 "## [x.y.z]" 的版本标题'
+    assert m.group(1) == word2md.__version__, (
+        f'CHANGELOG 版本 {m.group(1)} 与源码 {word2md.__version__} 不一致')
+
+
+def test_changelog_has_required_sections():
+    """变更日志至少要交代：新增、修复、限制。
+
+    没有「已知限制」的变更日志会误导使用者以为功能完整。
+    """
+    text = _changelog_text()
+    for section in ('### 新增', '### 修复', '### 已知限制'):
+        assert section in text, f'CHANGELOG 缺少「{section}」小节'
+
+
+def test_changelog_states_unpublished_status():
+    """未发布到 PyPI 就必须写明，否则读者会去 pip install 然后 404。"""
+    text = _changelog_text()
+    assert '未发布' in text, 'CHANGELOG 应明确标注当前发布状态'
+
+
+def test_changelog_documents_all_cli_entrypoints():
+    """CHANGELOG 宣称的命令行入口必须与 pyproject 实际声明一致。"""
+    pyproj = (REPO / 'pyproject.toml').read_text(encoding='utf-8')
+    declared = set(re.findall(r'^(word2md[a-z-]*)\s*=\s*"', pyproj, re.M))
+    assert declared, 'pyproject 未声明任何 word2md 入口'
+
+    text = _changelog_text()
+    missing = [c for c in declared if f'`{c}`' not in text]
+    # 表格式列举也接受：只要命令名出现在文中即可
+    missing = [c for c in missing if c not in text]
+    assert not missing, f'CHANGELOG 未提及这些入口点: {missing}'
+
+
+def test_changelog_does_not_claim_released():
+    """在当前未发布状态下，不得出现「已发布 / 已上线」等表述。"""
+    text = _changelog_text()
+    for claim in ('已发布到 PyPI', '已上线 PyPI'):
+        assert claim not in text, f'CHANGELOG 出现与实际不符的表述: {claim}'
