@@ -184,10 +184,34 @@ def test_changelog_has_required_sections():
         assert section in text, f'CHANGELOG 缺少「{section}」小节'
 
 
-def test_changelog_states_unpublished_status():
-    """未发布到 PyPI 就必须写明，否则读者会去 pip install 然后 404。"""
-    text = _changelog_text()
-    assert '未发布' in text, 'CHANGELOG 应明确标注当前发布状态'
+def test_changelog_release_status_is_consistent():
+    """CHANGELOG 的发布状态表述必须自洽，不得既称已发布又称未发布。
+
+    1.0.0 已上架 PyPI（2026-11-25）。此后若有人改动状态文案，两处必须同步，
+    否则会出现「README 说已发布、CHANGELOG 说未发布」这类自相矛盾。
+    """
+    changelog = _changelog_text()
+    readme = _readme_text()
+
+    released_in_cl = '已' in changelog and 'pypi.org/project/word-vane' in changelog
+    released_in_readme = 'pypi.org/project/word-vane' in readme
+
+    assert released_in_cl == released_in_readme, (
+        '发布状态表述不一致：CHANGELOG=%s, README=%s'
+        % (released_in_cl, released_in_readme))
+
+    # 已发布后不应再出现「尚未发布到 PyPI」的过期表述
+    if released_in_cl:
+        assert '尚未发布到 PyPI' not in changelog, \
+            'CHANGELOG 仍残留「尚未发布」的过期表述'
+        assert '尚未发布到 PyPI' not in readme, \
+            'README 仍残留「尚未发布」的过期表述'
+
+
+def test_readme_links_to_pypi():
+    """README 应提供 PyPI 项目链接，便于从包页反向找到仓库。"""
+    assert 'pypi.org/project/word-vane' in _readme_text(), \
+        'README 缺少 PyPI 项目链接'
 
 
 def test_changelog_documents_all_cli_entrypoints():
@@ -203,8 +227,14 @@ def test_changelog_documents_all_cli_entrypoints():
     assert not missing, f'CHANGELOG 未提及这些入口点: {missing}'
 
 
-def test_changelog_does_not_claim_released():
-    """在当前未发布状态下，不得出现「已发布 / 已上线」等表述。"""
+def test_changelog_version_heading_has_date():
+    """版本标题应带发布日期（已发布状态），便于追溯。
+
+    未发布时写「未发布」，发布后应替换为具体日期。
+    """
     text = _changelog_text()
-    for claim in ('已发布到 PyPI', '已上线 PyPI'):
-        assert claim not in text, f'CHANGELOG 出现与实际不符的表述: {claim}'
+    m = re.search(r'^##\s*\[[0-9]+\.[0-9]+\.[0-9]+\]\s*[—\-–]\s*(.+)$', text, re.M)
+    assert m, '版本标题缺少「— 状态/日期」部分'
+    tail = m.group(1).strip()
+    assert re.match(r'^\d{4}-\d{2}-\d{2}$', tail) or '未发布' in tail, (
+        f'版本标题状态应为日期或「未发布」，实际: {tail}')

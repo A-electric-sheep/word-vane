@@ -3,7 +3,7 @@
 为**样式重度的技术文档**做的 Word→Markdown 转换器：合并单元格忠实还原、转换后逐段逐格校验、
 只依赖两个 Python 包（不装 Pandoc、不下模型、不联网）。
 
-**版本**：1.0.0（开发中，尚未发布到 PyPI）　·　变更记录见 [CHANGELOG.md](CHANGELOG.md)
+**版本**：1.0.0　·　[PyPI](https://pypi.org/project/word-vane/)　·　变更记录见 [CHANGELOG.md](CHANGELOG.md)
 
 ## 它解决什么、不解决什么
 
