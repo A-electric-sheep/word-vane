@@ -1,0 +1,25 @@
+# sdist 内容清单
+#
+# 目标：下载源码包的人能直接跑通测试，且文档齐全。
+# 注意 conftest.py 必须包含 —— 多个测试文件依赖它生成夹具，
+# 缺失会导致源码包里的测试集完全无法运行（曾出现过该问题）。
+
+include LICENSE
+include README.md
+include CHANGELOG.md
+include REVIEW_SPEC.md
+include requirements.txt
+
+# 测试：含 conftest.py（夹具生成器），否则测试跑不起来
+recursive-include tests *.py
+
+# 可复现基准：供使用者用自己的语料重跑
+recursive-include bench *.py *.md
+
+# 可选工具脚本
+recursive-include tools *.ps1
+
+# 排除构建产物与缓存，避免污染源码包
+global-exclude *.py[cod] __pycache__ *.so *.egg-info
+prune .github
+prune .workbuddy
