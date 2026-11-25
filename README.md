@@ -147,6 +147,7 @@ python word2md.py 输入.docx [-o 输出目录] [--no-images] [--no-code-heurist
 | `--no-toc` | 跳过目录域处理 | 原文目录混乱、不想要目录时 |
 | `--no-bold` | 剥离 `**` 加粗语法 | **给 AI 阅读时推荐**，消除加粗碎片噪声 |
 | `--code-lang` | 代码块语言标记 | 默认 `c`，可改 `python`/`verilog` 等 |
+| `--styles` | 外部样式映射配置 JSON | 模板用了自定义章节样式名时，见「自定义样式映射」 |
 | `--verify` | 转换后立即做一致性校验 | 想一条命令拿到"没丢东西"的结论 |
 | `--probe` | 附带可读性诊断摘要 | 需要知道生成的 MD 适不适合喂 LLM |
 | `--fail-under` | 可读性阈值，低于则退出码 1 | 接进 CI / 质量门禁 |
@@ -275,6 +276,72 @@ word2md-probe 输入.docx 输出.md --sample 8
 
 检查项：标题层级是否可导航、表格列数是否一致、图片引用是否存在、公式是否闭合、有无残留占位符、目录锚点是否有效。
 
+## 自定义样式映射
+
+Word 模板常把章节标题定义成**自定义样式**（不是内置的 `Heading 1/2/3`），这时需要告诉
+转换器「哪个样式对应几级标题」。本工具有两条路径：先看通用规则能否自动命中，不行再配。
+
+### 第一层：通用结构规则（无需配置）
+
+样式名符合下列命名习惯时会被**自动识别**，与具体前缀无关：
+
+| 样式名形态 | 示例 | 判定 |
+|---|---|---|
+| `<前缀><数字>-<层级>` | `chapter1-2`、`sec2-3`、`part1-4` | 后缀数字即层级（h1~h4） |
+| `<前缀><数字>-<名字>` | `chapter1-content`、`part2-cover` | 视为一级章节（h1） |
+| `<前缀><数字>` | `section1`、`chapter2` | 视为一级章节（h1），并排除 `list`/`bullet`/`table` 等非章节词根 |
+| `*多栏` / `*multicol` | `正文多栏` | 正文像小标题时提升为 h3 |
+
+其中 `<前缀><数字>-<层级>` 形态明确，直接采信；后两种歧义较大，会额外校验正文特征
+（长度、无句末标点、非图注、非「数值+单位」条目）才提升。
+
+### 第二层：外部配置（用于特例）
+
+命名不符合上述规则、或需要覆盖默认判定的，用 JSON 配置注入。**源码里不硬编码任何
+特定厂商或模板的专有样式名**——这类名称属于内部资产，不应该出现在公开仓库里。
+
+配置文件查找顺序（前者优先）：
+
+1. `--styles 路径`
+2. 环境变量 `WORD2MD_STYLES` 指向的 JSON
+3. `~/.word2md/styles.json`
+
+格式（各键均可选）：
+
+```json
+{
+  "heading_styles": { "mycover1": 1, "mybodytex": 3 },
+  "toc_styles": { "mytoc 1": 1 },
+  "subheading_patterns": ["^mymulticol\\d*$"]
+}
+```
+
+```bash
+word2md doc.docx -o out/ --styles ./my-styles.json
+
+# 或一次性设置，之后所有转换都生效
+export WORD2MD_STYLES=/path/to/my-styles.json
+```
+
+库调用同样支持：
+
+```python
+from word2md import convert_word_to_markdown
+
+convert_word_to_markdown('doc.docx', out_dir='out',
+                         style_config='./my-styles.json',
+                         # 也可直接传字典，优先级高于配置文件
+                         heading_styles={'mycover1': 1})
+```
+
+### 排查：标题没被识别
+
+不确定某个样式名为何没生效时，先用 `word2md-probe` 看实际结构，或检查该样式是否真的
+应用到了段落上（Word 里 `Ctrl+Shift+S` 可查看当前样式名）。常见原因有两个：
+
+- 文档未使用样式、而是手工放大字号加粗——这类「伪标题」无法通过样式识别；
+- 样式名属于特例且未配置，按上面第二层补一条即可。
+
 ## 质量门禁（接进 CI）
 
 三个层面都可作为构建门禁，失败时退出码为 `1`：
@@ -388,7 +455,7 @@ print(report['pass'])
 ```bash
 pip install -e ".[dev]"
 
-pytest                                # 40 项测试
+pytest                                # 78 项测试
 ruff check .                          # 风格检查
 python bench/merged_cells_bench.py    # 合并单元格基准
 ```

@@ -29,8 +29,30 @@ def _is_toc_style_name(name):
 
 
 HEADING_STYLE_IDS = {'1', '2', '3', '4', '5', '6', 'Heading1', 'Heading2', 'Heading3',
-                     'Heading4', 'Heading5', 'Heading6', 'Title', '标题1', '标题2', '标题3',
-                     'soc1-1', 'soc1-2', 'soc1-3', 'soc1-4'}
+                     'Heading4', 'Heading5', 'Heading6', 'Title', '标题1', '标题2', '标题3'}
+
+# 通用章节样式形态（与 word2md._level_from_struct_name 口径对称）：
+#   <前缀><数字>-<层级> / <前缀><数字>-<名字> / <前缀><数字>
+# 这类自定义样式在本侧也应按"标题"处理，否则会把标题的手动编号误剥掉，
+# 造成与转换结果不对称的伪差异。
+RE_STRUCT_HEADING_ID = re.compile(r'^[a-z]+\d+-\d+$', re.I)
+RE_STRUCT_HEADING_NAMED_ID = re.compile(r'^[a-z]+\d+-[a-z]+$', re.I)
+RE_BARE_HEADING_ID = re.compile(
+    r'^(?!list|bullet|table|figure|image|caption|note|code|normal|body'
+    r'|enum|index|toc|quote|footer|header)[a-z]*\d+$', re.I)
+
+
+def _is_heading_style_id(style_id):
+    """判断 styleId/样式名是否属于章节标题样式（内置或通用自定义形态）。"""
+    if not style_id:
+        return False
+    s = style_id.strip()
+    if s in HEADING_STYLE_IDS:
+        return True
+    low = s.lower()
+    return bool(RE_STRUCT_HEADING_ID.match(low)
+                or RE_STRUCT_HEADING_NAMED_ID.match(low)
+                or RE_BARE_HEADING_ID.match(low))
 F0 = '\x00F\x00'
 
 
@@ -197,7 +219,7 @@ def word_parse(docx_path):
             # 手动编号段落(无 numPr 的 "1. xxx")与 MD 列表前缀剥离对称
             pPr2 = ch.find('w:pPr', NS)
             has_numpr = pPr2 is not None and pPr2.find('w:numPr', NS) is not None
-            if not has_numpr and style not in HEADING_STYLE_IDS:
+            if not has_numpr and not _is_heading_style_id(style):
                 # 手动编号 "1. xxx"/"1) xxx" 与 MD 列表前缀剥离对称;
                 # 标题与数值行(32.768k 等)不剥
                 txt = re.sub(r'^\d+[.)]\s*(?!\d)', '', txt)

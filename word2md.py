@@ -50,20 +50,94 @@ NS_VML = 'urn:schemas-microsoft-com:vml'
 
 DEFAULT_HEADING_STYLES = {'Title': 1, 'Heading 1': 1, 'Heading 2': 2, 'Heading 3': 3,
                           'Heading 4': 4, 'Heading 5': 5, 'Heading 6': 6,
-                          '标题 1': 1, '标题 2': 2, '标题 3': 3, '标题 4': 4, '标题 5': 5,
-                          # [DESENSITIZED] 某类技术规格书的自定义章节样式族(实测多文档混用)
-                          # soc1-N 为一级~四级章节; SOC2-N 同为章节标题, 前缀数字
-                          # 只是不同产品线命名差异, 均需映射, 否则整章标题退化为纯文本
-                          'soc1-1': 1, 'soc1-2': 2, 'soc1-3': 3, 'soc1-4': 4,
-                          # soc1-0 与 soc1-content 在英文版 Datasheet 中同样是一级
-                          # 章节标题(实测: Product Peripheral Resourse Table / Content)
-                          'soc1-0': 1, 'soc1-content': 1,
-                          'soc2-1': 1, 'soc2-2': 2, 'soc2-3': 3, 'soc2-4': 4,
-                          'soc3-1': 1, 'soc3-2': 2, 'soc3-3': 3, 'soc3-4': 4,
-                          # 多栏排版的小标题(实测: "主要功能"/"存储"/"时钟源" 等)
-                          'soc1多栏': 1, 'soc2多栏': 3, 'soc3多栏': 3,
-                          # [DESENSITIZED] 同系列技术参考手册一级章节标题样式(实测: 简介/文档约定/资源框图等 32 处)
-                          'SOC1': 1, 'SOC2': 1}
+                          '标题 1': 1, '标题 2': 2, '标题 3': 3, '标题 4': 4, '标题 5': 5}
+
+# 仓库只保留 Word 内置样式与**通用结构规则**，不含任何特定厂商/模板的专有样式名。
+# 定制样式请通过外部配置注入（见 load_style_config），不要在源码里硬编码：
+#   1) --styles 参数指定
+#   2) 环境变量 WORD2MD_STYLES 指向的 JSON
+#   3) ~/.word2md/styles.json
+# 配置文件格式见 README「自定义样式映射」。
+STYLE_CONFIG_ENV = 'WORD2MD_STYLES'
+STYLE_CONFIG_HOME = os.path.join('~', '.word2md', 'styles.json')
+
+# 通用「子标题样式」模式：样式名本身不代表章节层级，但正文具备小标题特征时，
+# 可提升为 h3。默认只覆盖语言/行业中立的命名习惯，厂商专有前缀一律走外部配置。
+DEFAULT_SUBHEADING_PATTERNS = [
+    r'.*多栏$',          # 中文模板的多栏排版小标题
+    r'.*multicol$',      # 英文对应写法
+]
+
+# 通用「章节样式」结构规则：Word 模板中自定义章节样式常写作
+#   <前缀><数字>-<层级>      如 chapter1-2、sec2-3、part1-4
+# 其中「-数字」后缀就是章节层级，形态足够明确，可直接采信。
+# 这条规则替代了原先针对个别模板的硬编码样式表，对任意前缀同样生效。
+RE_STRUCT_HEADING = re.compile(r'^[a-z]+(\d+)-(\d+)$', re.I)
+# <前缀><数字>-<非数字名>（如 chapter1-content、part2-cover）：模板常把「目录/扉页」
+# 这类前置页定义成一级章节，故统一按 h1 处理；正文特征校验通过才采信。
+RE_STRUCT_HEADING_NAMED = re.compile(r'^[a-z]+\d+-[a-z]+$', re.I)
+# <前缀><数字> 结尾且无连字符（如 section1 / part2）视为一级章节，
+# 但该形态歧义较大，故排除常见的非章节样式词根，且仍需正文特征校验。
+RE_BARE_HEADING = re.compile(
+    r'^(?!list|bullet|table|figure|image|caption|note|code|normal|body'
+    r'|enum|index|toc|quote|footer|header)[a-z]*\d+$', re.I)
+
+
+def _level_from_struct_name(lower_name):
+    """按通用结构规则从样式名推断章节层级(1-4)，不匹配返回 None。
+
+    仅处理 `<前缀><数字>-<层级>` 这种明确形态；裸前缀+数字
+    （section1 等）因与其他样式名歧义较大，交由调用方结合正文特征判定。
+    """
+    m = RE_STRUCT_HEADING.match(lower_name)
+    if not m:
+        return None
+    # 取连字符后的数字为层级；模型里 N 通常从 1 起，个别模板用 0 表示首章
+    lv = int(m.group(2))
+    if lv == 0:
+        lv = 1
+    return lv if 1 <= lv <= 4 else None
+
+
+def load_style_config(path=None):
+    """加载外部样式配置（用于注定制模板，源码中不保留任何专有名称）。
+
+    查找顺序:
+        1) 显式传入的 path
+        2) 环境变量 WORD2MD_STYLES 指向的 JSON
+        3) ~/.word2md/styles.json
+
+    文件格式（各键均可选）:
+        {
+          "heading_styles":    {"my-chapter-1": 1, "my-chapter-2": 2},
+          "toc_styles":        {"mytoc 1": 1},
+          "subheading_patterns": ["^mybody\\d*$"]
+        }
+
+    返回 dict，未找到任何配置时返回空 dict（调用方无需判空）。
+    """
+    import json
+
+    candidates = []
+    if path:
+        candidates.append(os.path.expanduser(str(path)))
+    env_path = os.environ.get(STYLE_CONFIG_ENV)
+    if env_path:
+        candidates.append(os.path.expanduser(env_path))
+    candidates.append(os.path.expanduser(STYLE_CONFIG_HOME))
+
+    for p in candidates:
+        if not p or not os.path.isfile(p):
+            continue
+        try:
+            with open(p, encoding='utf-8') as f:
+                data = json.load(f)
+        except (OSError, ValueError) as e:
+            raise ValueError(f'样式配置读取失败: {p}: {e}') from e
+        if not isinstance(data, dict):
+            raise ValueError(f'样式配置必须是 JSON 对象: {p}')
+        return data
+    return {}
 DEFAULT_TOC_STYLES = {'toc 1': 1, 'toc 2': 2, 'toc 3': 3, 'toc 4': 4, 'toc 5': 1, 'TOC1': 1,
                       'TOC2': 2, 'TOC3': 3, 'TOC4': 4,
                       # Word 内置目录样式的标准写法是「TOC 1」~「TOC 9」(带空格、
@@ -239,7 +313,8 @@ class Converter:
 
     def __init__(self, src_path, *, code_heuristics=True, include_toc=True,
                  heading_styles=None, toc_styles=None, code_lang='c',
-                 image_dir_name='images', strip_emphasis=False):
+                 image_dir_name='images', strip_emphasis=False,
+                 style_config=None, subheading_patterns=None):
         self.src = str(src_path)
         self.code_heuristics = code_heuristics
         self.include_toc = include_toc
@@ -247,19 +322,34 @@ class Converter:
         self.img_sub = image_dir_name
         # 剥离加粗/粗斜体(为 AI 阅读链路降噪); 不动文本内容与 sub/sup/s/br 功能标签
         self.strip_emphasis = strip_emphasis
+
+        # 外部样式配置(定制模板)：源码不含专有样式名，一律从这里注入
+        cfg = load_style_config(style_config)
+
         self.heading_level = dict(DEFAULT_HEADING_STYLES)
+        self.heading_level.update(cfg.get('heading_styles') or {})
         if heading_styles:
             self.heading_level.update(heading_styles)
-        # 样式名大小写不敏感索引: Word 文档中 SOC1-1 / soc1-1 混用极常见,
-        # 且部分型号 SOC1 为分页空段落、SOC1-1 才是一级标题(实测多份规格书均为该形态),
+        # 样式名大小写不敏感索引: Word 文档中大小写混用极常见,
+        # 且个别模板把首页设为分页空段落、次样式才是一级标题,
         # 故统一用小写键查找, 空标题段落由调用处跳过。
         self._heading_ci = {k.strip().lower(): v for k, v in self.heading_level.items()}
+
         self.toc_level = dict(DEFAULT_TOC_STYLES)
+        self.toc_level.update(cfg.get('toc_styles') or {})
         if toc_styles:
             self.toc_level.update(toc_styles)
         # 与标题映射保持一致: 样式名大小写不敏感查找。
         # Word 中「TOC 1」/「toc 1」/「TOC1」三种写法并存, 精确匹配会漏判。
         self._toc_ci = {k.strip().lower(): v for k, v in self.toc_level.items()}
+
+        # 子标题样式模式：通用默认 + 外部配置追加
+        pats = list(DEFAULT_SUBHEADING_PATTERNS)
+        pats += [p for p in (cfg.get('subheading_patterns') or []) if p]
+        if subheading_patterns:
+            pats += list(subheading_patterns)
+        self._subheading_re = (re.compile('|'.join(f'(?:{p})' for p in pats), re.I)
+                               if pats else None)
 
         self.warnings: list[str] = []
         self.doc = docx.Document(self.src)
@@ -395,7 +485,7 @@ class Converter:
     def _looks_like_subheading(self, text):
         """判断文本是否像"小标题"而非正文/条目/图注。
 
-        用于区分 SOC2tex(小标题) 与 SOC1tex(正文段或图注)、soc2cir(条目)。
+        用于区分子标题样式(小标题)与正文样式(正文段或图注)、条目样式。
         小标题特征: 短、不以标点收尾、无句号式陈述。
         """
         t = (text or '').strip()
@@ -471,7 +561,7 @@ class Converter:
           1) 样式名命中映射表(大小写不敏感) —— 高置信, 直接采用
           2) 段落/样式自身的 w:outlineLvl —— 兜底, 但需通过合理性校验
         注意:
-          - **不使用 basedOn 继承链**。实测 SOC2tex 等正文样式 basedOn 为
+          - **不使用 basedOn 继承链**。实测某些正文样式 basedOn 为
             "Heading 5", 但语义上只是三级小标题, 按继承链会误判大量段落为 h5。
           - outlineLvl 兜底限 1~4 级且排除"寄存器名/位域名"式文本。Word 里
             寄存器小节标题常被设 outlineLvl=5, 强行提升会产出 100+ 个 h5/h6
@@ -505,13 +595,29 @@ class Converter:
                 return None
             return level
 
-        # 样式名启发式(仅针对 outlineLvl 兜底之前): 此类规格书文档里
-        #   SOC2tex / soc1tex  -> 小标题("工作条件"、"EMS"、"封装类型")
-        #   SOC2cir / soc2squ / soczw* -> 内容条目(非标题)
+        # 样式名启发式(仅针对 outlineLvl 兜底之前): 此类文档里
+        #   子标题样式 -> 小标题("工作条件"、"封装类型")
+        #   条目样式   -> 内容条目(非标题)
         # 二者仅靠样式名难以区分, 用"是否像标题"的文本特征判定。
-        m_tex = re.match(r'^(?:soc\d(?:tex)\w*|soc\d多栏)$', sname.strip().lower())
-        if m_tex and not getattr(self, '_prev_block_had_image', False) \
+        lower = sname.strip().lower()
+        # 1) 通用结构规则: <前缀><数字>-<层级>, 取后缀数字为层级(形态明确, 直接采信)
+        lv_struct = _level_from_struct_name(lower)
+        if lv_struct:
+            return lv_struct
+        # 2) <前缀><数字>-<名字>(如 chapter1-content): 前置页章节, 按 h1, 需正文像标题
+        if RE_STRUCT_HEADING_NAMED.match(lower) and len(text) <= 90 \
+                and not getattr(self, '_prev_block_had_image', False) \
                 and self._looks_like_subheading(text):
+            return 1
+        # 3) <前缀><数字> 形态(如 section1): 歧义较大, 要求正文也像标题
+        if RE_BARE_HEADING.match(lower) and len(text) <= 90 \
+                and not getattr(self, '_prev_block_had_image', False) \
+                and self._looks_like_subheading(text):
+            return 1
+        # 4) 子标题模式(通用默认 + 外部配置): 仅当正文像小标题时提升为 h3
+        if (self._subheading_re is not None and self._subheading_re.match(lower)
+                and not getattr(self, '_prev_block_had_image', False)
+                and self._looks_like_subheading(text)):
             # 依附于该文档已出现的最深 h1/h2 之下, 取 h3
             return 3
 
@@ -1575,6 +1681,8 @@ def convert_word_to_markdown(src_path, out_dir=None, **kwargs) -> dict:
         code_heuristics:  代码块启发式识别(默认 True)
         include_toc:      目录域处理(默认 True)
         heading_styles:   额外标题样式映射 {样式名: 级别}
+        style_config:     外部样式配置 JSON 路径(定制模板用, 见 load_style_config)
+        subheading_patterns: 追加的子标题样式名正则列表
         code_lang:        代码块语言标记(默认 'c')
     返回: 统计 dict(含 md_path / warnings / 各类计数)"""
     src_path = str(src_path)
@@ -1600,7 +1708,9 @@ def convert_word_to_markdown(src_path, out_dir=None, **kwargs) -> dict:
                      toc_styles=kwargs.get('toc_styles'),
                      code_lang=kwargs.get('code_lang', 'c'),
                      image_dir_name=kwargs.get('image_dir_name', 'images'),
-                     strip_emphasis=kwargs.get('strip_emphasis', False))
+                     strip_emphasis=kwargs.get('strip_emphasis', False),
+                     style_config=kwargs.get('style_config'),
+                     subheading_patterns=kwargs.get('subheading_patterns'))
     if out_dir is None:
         out_dir = os.path.join(os.path.dirname(src_path),
                                os.path.splitext(os.path.basename(src_path))[0] + '_md')
@@ -1618,6 +1728,9 @@ def main(argv=None):
     ap.add_argument('--no-toc', action='store_true', help='关闭目录域处理')
     ap.add_argument('--no-bold', action='store_true', help='剥离加粗/粗斜体强调语法(为 AI 阅读降噪, 文本内容与 sub/sup/br 功能标签保留)')
     ap.add_argument('--code-lang', default='c', help='代码块语言标记(默认 c)')
+    ap.add_argument('--styles', default=None, metavar='JSON',
+                    help='外部样式映射配置(定制模板用)；缺省依次查找环境变量 '
+                         'WORD2MD_STYLES 与 ~/.word2md/styles.json')
     ap.add_argument('--verify', action='store_true',
                     help='转换后立即做内容级一致性校验；不一致时退出码为 1')
     ap.add_argument('--fail-under', type=float, default=None, metavar='SCORE',
@@ -1632,7 +1745,8 @@ def main(argv=None):
         code_heuristics=not args.no_code_heuristics,
         include_toc=not args.no_toc,
         code_lang=args.code_lang,
-        strip_emphasis=args.no_bold)
+        strip_emphasis=args.no_bold,
+        style_config=args.styles)
 
     print(f"转换完成: {stats['md_path']}")
     print(f"  标题 {stats['headings']} | 表格 {stats['tables']} (GFM {stats['tables_gfm']}/HTML {stats['tables_html']})"
