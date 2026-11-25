@@ -3,7 +3,7 @@
 为**样式重度的技术文档**做的 Word→Markdown 转换器：合并单元格忠实还原、转换后逐段逐格校验、
 只依赖两个 Python 包（不装 Pandoc、不下模型、不联网）。
 
-**版本**：1.0.0　·　[PyPI](https://pypi.org/project/word-vane/)　·　变更记录见 [CHANGELOG.md](CHANGELOG.md)
+**版本**：1.0.1　·　[PyPI](https://pypi.org/project/word-vane/)　·　变更记录见 [CHANGELOG](https://github.com/A-electric-sheep/word-vane/blob/main/CHANGELOG.md)
 
 ## 它解决什么、不解决什么
 
@@ -37,7 +37,7 @@ GFM 管道表语法上**没有** `colspan`/`rowspan`。所以"docx → GFM"路�
 | **word2md** | **4/4** | **3/3** | HTML `<table>` + colspan/rowspan |
 | anydoc | 0/4 | 0/3 | GFM 管道表，合并语义不可恢复 |
 
-复现：`python bench/merged_cells_bench.py --with-anydoc`（口径与局限见 [bench/README.md](bench/README.md)）
+复现：`python bench/merged_cells_bench.py --with-anydoc`（口径与局限见 [bench/README](https://github.com/A-electric-sheep/word-vane/blob/main/bench/README.md)）
 
 > 说明：这是**构造夹具**上的单点对照，不代表两工具的整体优劣。anydoc 在格式覆盖、
 > 速度（中位 4.4ms vs 本项目 20–40s）上远优于本项目。如果你要处理的文档没有合并单元格，

@@ -32,7 +32,7 @@ import sys
 import zipfile
 
 # 版本号: 分发后用于区分行为差异, 修改转换逻辑时请同步递增
-__version__ = '1.0.0'
+__version__ = '1.0.1'
 
 import docx
 from docx.enum.style import WD_STYLE_TYPE

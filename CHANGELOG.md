@@ -7,23 +7,38 @@
 
 ## 关于版本号
 
-`1.0.0` 已于 2026-11-25 发布到 [PyPI](https://pypi.org/project/word-vane/1.0.0/)。
+最新版本见 [PyPI](https://pypi.org/project/word-vane/)。
 
-开发期间版本号未随功能递增（7 个功能性提交都停留在 1.0.0），
-因此下方条目按**日期**而非版本号分组，首次发布后的变更将按语义化版本递增。
+`1.0.0` 于 2026-11-25 首次发布。开发期间版本号未随功能递增
+（7 个功能性提交都停留在 1.0.0），故该版本条目按**日期**而非版本号组织；
+此后的变更按语义化版本正常递增。
 
 当前版本可通过任一方式核对，三者应一致：
 
 ```bash
-word2md --version          # word2md 1.0.0
-python -c "import word2md; print(word2md.__version__)"   # 1.0.0
-pip show word-vane | grep Version                        # Version: 1.0.0
+word2md --version          # 当前版本
+python -c "import word2md; print(word2md.__version__)"
+pip show word-vane | grep Version
 ```
 
 版本号的**唯一来源**是 `word2md.py` 中的 `__version__`：
 `pyproject.toml` 通过 `[tool.setuptools.dynamic]` 读取它，不单独维护。
 
 ---
+
+## [1.0.1] — 2026-11-25
+
+修正 1.0.0 发布时遗留的元数据问题。**无代码逻辑变更**。
+
+### 修复
+
+- **PyPI 页面的 README 仍写着「开发中，尚未发布到 PyPI」**
+  1.0.0 是先上传产物、后更新文档，导致包页展示的说明与实际状态矛盾。
+  本版本重新构建上传，页面说明已与实际一致。
+- **README 中两个相对链接在 PyPI 上失效**
+  `CHANGELOG.md` 与 `bench/README.md` 是相对路径，在 GitHub 上可用，
+  但 PyPI 项目页不解析仓库内相对路径，点击即 404。
+  已改为指向 GitHub 的绝对 URL。
 
 ## [1.0.0] — 2026-11-25
 

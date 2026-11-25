@@ -185,33 +185,70 @@ def test_changelog_has_required_sections():
 
 
 def test_changelog_release_status_is_consistent():
-    """CHANGELOG 的发布状态表述必须自洽，不得既称已发布又称未发布。
+    """README 与 CHANGELOG 的发布状态必须一致，且不得残留过期状态声明。
 
-    1.0.0 已上架 PyPI（2026-11-25）。此后若有人改动状态文案，两处必须同步，
-    否则会出现「README 说已发布、CHANGELOG 说未发布」这类自相矛盾。
+    只在「关于版本号」段与 README 首屏这类**状态声明位置**判断，
+    不扫描全篇——变更条目里正常引用历史问题（如「曾写着尚未发布」）
+    不应被判为违规。
     """
     changelog = _changelog_text()
     readme = _readme_text()
 
-    released_in_cl = '已' in changelog and 'pypi.org/project/word-vane' in changelog
+    released_in_cl = 'pypi.org/project/word-vane' in changelog
     released_in_readme = 'pypi.org/project/word-vane' in readme
-
     assert released_in_cl == released_in_readme, (
         '发布状态表述不一致：CHANGELOG=%s, README=%s'
         % (released_in_cl, released_in_readme))
 
-    # 已发布后不应再出现「尚未发布到 PyPI」的过期表述
-    if released_in_cl:
-        assert '尚未发布到 PyPI' not in changelog, \
-            'CHANGELOG 仍残留「尚未发布」的过期表述'
-        assert '尚未发布到 PyPI' not in readme, \
-            'README 仍残留「尚未发布」的过期表述'
+    if not released_in_cl:
+        return
+
+    # CHANGELOG 的「关于版本号」段是状态声明区
+    m = re.search(r'##\s*关于版本号(.*?)(?=\n##\s|\Z)', changelog, re.S)
+    assert m, 'CHANGELOG 缺少「关于版本号」段'
+    status_block = m.group(1)
+    assert '尚未发布' not in status_block, \
+        '「关于版本号」段仍声明尚未发布，与已发布状态矛盾'
+
+    # README 首屏（版本行所在区域）不应再称开发中/未发布
+    head = '\n'.join(readme.splitlines()[:8])
+    assert '尚未发布' not in head, 'README 首屏仍称未发布'
+    assert '开发中' not in head, 'README 首屏仍称开发中'
 
 
 def test_readme_links_to_pypi():
     """README 应提供 PyPI 项目链接，便于从包页反向找到仓库。"""
     assert 'pypi.org/project/word-vane' in _readme_text(), \
         'README 缺少 PyPI 项目链接'
+
+
+def test_readme_has_no_repo_relative_links():
+    """README 会被渲染到 PyPI 项目页，其中不得使用仓库内相对链接。
+
+    PyPI 不解析仓库相对路径，`](CHANGELOG.md)` 在包页上点击即 404。
+    README 同时要服务于 GitHub 与 PyPI 两个场景，因此文档间跳转
+    必须写成绝对 URL。
+    """
+    text = _readme_text()
+    # 匹配 ](xxx.md) 或 ](dir/xxx.md) 这类不含协议的相对路径
+    rel = re.findall(r'\]\((?!https?://|#|mailto:)([^)]*\.md)\)', text)
+    assert not rel, (
+        f'README 存在仓库相对链接 {rel}，在 PyPI 页面上会 404；'
+        '请改为 https://github.com/A-electric-sheep/word-vane/blob/main/... ')
+
+
+def test_readme_does_not_claim_unpublished():
+    """已发布后，README 不得再出现「尚未发布」的过期表述。
+
+    1.0.0 曾因先上传、后改文档，导致 PyPI 包页展示
+    「开发中，尚未发布到 PyPI」与实际状态矛盾。
+    """
+    text = _readme_text()
+    assert '尚未发布到 PyPI' not in text, \
+        'README 残留「尚未发布到 PyPI」表述，与已发布状态矛盾'
+    # 版本行（首屏）不应再声明「开发中」
+    head = '\n'.join(text.splitlines()[:8])
+    assert '开发中' not in head, 'README 首屏仍标注「开发中」，与已发布状态矛盾'
 
 
 def test_changelog_documents_all_cli_entrypoints():
