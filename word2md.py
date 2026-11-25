@@ -148,8 +148,8 @@ DEFAULT_TOC_STYLES = {'toc 1': 1, 'toc 2': 2, 'toc 3': 3, 'toc 4': 4, 'toc 5': 1
 CODE_PREFIXES = ('#include', '#define', 'unsigned', 'void ', 'static', 'typedef',
                  'int ', 'char ', 'long ', 'short ', 'float ', '/*', '//')
 # 左值: 标识符 + 可选的 .成员/->成员 与 [下标] 后缀。
-# 下标两侧允许空格 —— 规格书代码里 "REG_X [i]= *( POINT+i);" 这类写法
-# 极常见(实测 10 份文档), 旧式 [\w$\[\]\.\->]* 要求 "[" 紧贴标识符, 会漏判。
+# 下标两侧允许空格 —— 嵌入式代码里 "REG_X [i]= *( POINT+i);" 这类写法
+# 极常见, 旧式 [\w$\[\]\.\->]* 要求 "[" 紧贴标识符, 会漏判。
 RE_CODE_LVALUE = r"[A-Za-z_$][\w$\.\->]*(?:\s*\[\s*[^\]\s]*\s*\])*[\w$\.\->]*"
 RE_CODE_ASSIGN = re.compile(
     r"^" + RE_CODE_LVALUE + r"\s*"
@@ -164,8 +164,9 @@ RE_CODE_CTRL = re.compile(r'^(?:\b(?:for|if|while|switch)\s*\(.*|\breturn\b.*|[\
 #   代码      "_nop_();"、"I2C_START();"、"I2C_WRITE(addr);"  → 命中
 #   正文说明  "REG_A1 (CBH)"、"SOP16L(150mil)"、"REG_B (F0H)"
 #             "PWMn周期寄存器高8位(读/写)"  → 全部不命中(无分号)
-# 实测 73 份规格书: 正文中形如 "标识符(参数)" 的段落 16 种, 其中仅 _nop_() 系列
-# 共 95 次是真代码; 其余为寄存器/封装说明, 去掉分号要求会把它们误包进代码块。
+# 实测表明: 正文中形如 "标识符(参数)" 的段落里, 真正是代码的只有
+# _nop_() 这类带分号的调用; 其余多为寄存器/封装说明(无分号)。
+# 因此分号是必要的区分条件, 去掉它会把说明文字误包进代码块。
 RE_CODE_CALL = re.compile(
     r"^[A-Za-z_]\w*(?:\s*(?:\.|->)\s*[A-Za-z_]\w*)*\s*"
     r"\([^()]*\)\s*;\s*(?://.*)?$"
@@ -1124,11 +1125,10 @@ class Converter:
         不是段落内文字的格式。Word 里改「段落标记」字体时只影响那个看不见的
         回车符, 不影响文字显示。
 
-        实测某份规格书: 表43 的 REG_C 单元格 pPr/rPr 带 <w:strike/>, 但
-        run 自身无 strike, 同表的其它单元格也无此标记 —— 三者在 Word 中
-        显示完全一致(都没删除线)。旧版把它当文字格式继承, 于是输出
-        <s>REG_C</s>, 凭空多出删除线。同类误伤: 全库 37 处 <strong> + 14 处
-        <s> 是段落标记污染, 与实际可见格式不符。
+        某类文档中曾观察到: 单元格的 pPr/rPr 带 <w:strike/>, 但
+        run 自身无 strike, 同表其它单元格也无此标记 —— 三者在 Word 中
+        显示完全一致(都没删除线)。旧版把它当文字格式继承, 于是凭空多出
+        删除线。该误伤会同时污染 <strong>/<s>, 与实际可见格式不符。
 
         vertAlign 保留继承: 部分文档把整段设为上下标时只写在 pPr/rPr 里,
         且该属性针对文字本身, 无 pilcrow 语义歧义。
@@ -1544,7 +1544,7 @@ class Converter:
                         lv = prev_heading_lv + 1
                     prev_heading_lv = lv
                     # 标题本身已是结构强调, 内部再保留 ** 只会产生
-                    # "# **主要功能**" 这类噪声(实测 7 份文档 26 处), 故剥离
+                    # "# **主要功能**" 这类噪声, 故剥离
                     head_txt = re.sub(r'\*{1,3}', '', txt).strip()
                     lines.append('#' * lv + ' ' + head_txt)
                     lines.append('')
@@ -1604,7 +1604,7 @@ class Converter:
                     flush_code()
 
                 # 列表块结束时补空行: 否则紧随其后的正文会被 GFM 解析器并入
-                # 最后一个列表项(实测 21 处), 破坏段落边界与 AI 的分段理解
+                # 最后一个列表项, 破坏段落边界与 AI 的分段理解
                 break_list()
                 lines.append(txt)
                 lines.append('')
